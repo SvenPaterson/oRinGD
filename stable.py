@@ -247,18 +247,12 @@ class Canvas(QWidget):
         for crack, color in self.cracks:
             for crack_point in crack:
                 distance = math.hypot(crack_point.x() - point.x(), crack_point.y() - point.y())
-                if distance < 10:  # If the clicked point is close to any point in a crack
+                if distance < 10:
                     self.cracks.remove((crack, color))
                     self.update()
-
-                    # Update the crack details table
                     if self.table_widget:
-                        self.update_crack_details_table()
-
-                    # Update the rating evaluation table
-                    if self.rating_table_widget:
-                        self.update_rating_table()
-
+                        self.update_table_widget()
+                    self.update_rating_table()  # Ensure table updates after deletion
                     return
 
     def classify_crack(self, crack):
@@ -302,41 +296,6 @@ class Canvas(QWidget):
             length_percent = (crack_length / csd) * 100 if csd > 0 else 0
 
             # Fill in table values
-            self.table_widget.setItem(row_position, 0, QTableWidgetItem(str(row_position + 1)))
-            self.table_widget.setItem(row_position, 1, QTableWidgetItem(crack_type))
-            self.table_widget.setItem(row_position, 2, QTableWidgetItem(f"{length_percent:.2f}%"))
-
-    def update_crack_details_table(self):
-        """Update the crack details table with the current cracks information."""
-        if not self.table_widget:
-            return
-
-        self.table_widget.setRowCount(0)  # Clear the table and reset rows
-
-        for row_position, (crack, color) in enumerate(self.cracks):
-            # Determine crack type
-            color_name = {
-                Qt.GlobalColor.blue: "Internal",
-                Qt.GlobalColor.yellow: "External",
-                Qt.GlobalColor.red: "Split",
-                Qt.GlobalColor.white: "Undefined"
-            }
-            crack_type = color_name.get(color, "Unknown")
-
-            # Calculate crack length
-            crack_length = sum(math.hypot(crack[i + 1].x() - crack[i].x(), crack[i + 1].y() - crack[i].y()) for i in range(len(crack) - 1))
-
-            # Calculate the CSD and percentage length
-            perimeter_length = sum(math.hypot(self.perimeter_spline[i + 1].x() - self.perimeter_spline[i].x(),
-                                            self.perimeter_spline[i + 1].y() - self.perimeter_spline[i].y())
-                                for i in range(len(self.perimeter_spline) - 1))
-            perimeter_length += math.hypot(self.perimeter_spline[-1].x() - self.perimeter_spline[0].x(),
-                                        self.perimeter_spline[-1].y() - self.perimeter_spline[0].y())
-            csd = perimeter_length / math.pi if perimeter_length > 0 else 1
-            length_percent = (crack_length / csd) * 100 if csd > 0 else 0
-
-            # Insert updated crack information into the table
-            self.table_widget.insertRow(row_position)
             self.table_widget.setItem(row_position, 0, QTableWidgetItem(str(row_position + 1)))
             self.table_widget.setItem(row_position, 1, QTableWidgetItem(crack_type))
             self.table_widget.setItem(row_position, 2, QTableWidgetItem(f"{length_percent:.2f}%"))
