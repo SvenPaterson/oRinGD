@@ -248,12 +248,18 @@ class Canvas(QWidget):
         for crack, color in self.cracks:
             for crack_point in crack:
                 distance = math.hypot(crack_point.x() - point.x(), crack_point.y() - point.y())
-                if distance < 10:
+                if distance < 10:  # If the clicked point is close to any point in a crack
                     self.cracks.remove((crack, color))
                     self.update()
+
+                    # Update the crack details table
                     if self.table_widget:
-                        self.update_table_widget()
-                    self.update_rating_table()  # Ensure table updates after deletion
+                        self.update_crack_details_table()
+
+                    # Update the rating evaluation table
+                    if self.rating_table_widget:
+                        self.update_rating_table()
+
                     return
 
     def classify_crack(self, crack):
@@ -297,6 +303,41 @@ class Canvas(QWidget):
             length_percent = (crack_length / csd) * 100 if csd > 0 else 0
 
             # Fill in table values
+            self.table_widget.setItem(row_position, 0, QTableWidgetItem(str(row_position + 1)))
+            self.table_widget.setItem(row_position, 1, QTableWidgetItem(crack_type))
+            self.table_widget.setItem(row_position, 2, QTableWidgetItem(f"{length_percent:.2f}%"))
+
+    def update_crack_details_table(self):
+        """Update the crack details table with the current cracks information."""
+        if not self.table_widget:
+            return
+
+        self.table_widget.setRowCount(0)  # Clear the table and reset rows
+
+        for row_position, (crack, color) in enumerate(self.cracks):
+            # Determine crack type
+            color_name = {
+                Qt.GlobalColor.blue: "Internal",
+                Qt.GlobalColor.yellow: "External",
+                Qt.GlobalColor.red: "Split",
+                Qt.GlobalColor.white: "Undefined"
+            }
+            crack_type = color_name.get(color, "Unknown")
+
+            # Calculate crack length
+            crack_length = sum(math.hypot(crack[i + 1].x() - crack[i].x(), crack[i + 1].y() - crack[i].y()) for i in range(len(crack) - 1))
+
+            # Calculate the CSD and percentage length
+            perimeter_length = sum(math.hypot(self.perimeter_spline[i + 1].x() - self.perimeter_spline[i].x(),
+                                            self.perimeter_spline[i + 1].y() - self.perimeter_spline[i].y())
+                                for i in range(len(self.perimeter_spline) - 1))
+            perimeter_length += math.hypot(self.perimeter_spline[-1].x() - self.perimeter_spline[0].x(),
+                                        self.perimeter_spline[-1].y() - self.perimeter_spline[0].y())
+            csd = perimeter_length / math.pi if perimeter_length > 0 else 1
+            length_percent = (crack_length / csd) * 100 if csd > 0 else 0
+
+            # Insert updated crack information into the table
+            self.table_widget.insertRow(row_position)
             self.table_widget.setItem(row_position, 0, QTableWidgetItem(str(row_position + 1)))
             self.table_widget.setItem(row_position, 1, QTableWidgetItem(crack_type))
             self.table_widget.setItem(row_position, 2, QTableWidgetItem(f"{length_percent:.2f}%"))
@@ -349,7 +390,6 @@ class Canvas(QWidget):
             # Set thresholds for each rating level
             for col, threshold_key in enumerate(thresholds.keys(), start=2):
                 self.rating_table_widget.setItem(row, col, QTableWidgetItem(thresholds[threshold_key][row]))
-
 
     def update_rating_table(self):
         """Update the rating evaluation table with the measured values for each metric."""
@@ -425,10 +465,69 @@ class Canvas(QWidget):
         if overall_evaluation_row is not None:
             # Determine Overall Evaluation
             overall_evaluation = "Pass"
-            assigned_rating = 5  # Start with the highest rating, and reduce as needed
+            internal_crack_rating = 0
+            external_crack_rating = 0
+            assigned_rating = 0  # Start with the worst rating and reduce as needed
+            presence_of_splits = any(color == Qt.GlobalColor.red for _, color in crack_lengths)
 
-            # (Add your rating logic here based on your pseudo code)
+            # Step 1: Evaluate Rating 5 (Any split)
+            if presence_of_splits:
+                assigned_rating = 5
+                overall_evaluation = "Fail"
+            # Step 2: Evaluate Rating 0 (No cracks at all)
+            elif len(crack_lengths) == 0:
+                assigned_rating = 0
+                overall_evaluation = "Pass"
+            else:
+                # Step 3: Evaluate external cracks first
+                for crack_length, color in crack_lengths:
+                    if color == Qt.GlobalColor.yellow:  # External crack
+                        crack_length_percent = (crack_length / csd) * 100
 
+                        if crack_length_percent > 50:
+                            external_crack_rating = 4
+                            break  # No need to evaluate further if we reach Rating 4
+                        elif 25 < crack_length_percent <= 50:
+                            external_crack_rating = 3
+                        elif 10 < crack_length_percent <= 25:
+                            external_crack_rating = 2
+                        elif crack_length_percent <= 10:
+                            external_crack_rating = 1
+
+                # Step 4: Further evaluation based on internal cracks or overall combined conditions
+                                # If total combined crack length >=300% OR at least 1 internal crack >80% CSD OR 3 or more internal cracks each > 50% CSD
+                internal_crack_count_above_50 = sum(1 for length, color in crack_lengths if color == Qt.GlobalColor.blue and (length / csd) * 100 > 50)
+                internal_cracks_50_80 = sum(1 for length, color in crack_lengths if color == Qt.GlobalColor.blue and 50 <= (length / csd) * 100 <= 80)
+                
+                if length_percent >= 300 or any((length / csd) * 100 > 80 for length, color in crack_lengths if color == Qt.GlobalColor.blue) or internal_crack_count_above_50 >= 3:
+                    internal_crack_rating = 4
+
+                # If only 2 or fewer internal cracks each with length 50 to 80% CSD and total combined crack length >=200% but <300% CSD
+                elif internal_cracks_50_80 <= 2 and 200 <= length_percent < 300:
+                    internal_crack_rating = 3
+
+                                # If all cracks are >=25% but <50% CSD and total combined crack length >=100% but <200% CSD
+                elif all(25 <= (length / csd) * 100 < 50 for length, _ in crack_lengths) and 100 <= length_percent < 200:
+                    internal_crack_rating = 2
+
+                # If all cracks are <25% CSD and total combined crack length <100% CSD
+                elif all((length / csd) * 100 < 25 for length, _ in crack_lengths) and length_percent < 100:
+                    for length, _ in crack_lengths:
+                        print((length / csd) * 100)
+                    print("length_percent:", length_percent)
+                    internal_crack_rating = 1
+
+            assigned_rating = max(external_crack_rating, internal_crack_rating)
+
+            if assigned_rating <= 3:
+                overall_evaluation = "Pass"
+            else:
+                overall_evaluation = "Fail"
+
+            print("assigned_rating:", assigned_rating)
+            print("overal_evaluation:", overall_evaluation)
+
+            # Update Overall Evaluation in the Rating Table
             overall_evaluation_text = f"Rating: {assigned_rating} - {overall_evaluation}"
             item = self.rating_table_widget.item(overall_evaluation_row, 1)
 
@@ -447,6 +546,7 @@ class Canvas(QWidget):
 
         # Refresh the UI for the table to reflect changes
         self.rating_table_widget.viewport().update()
+
 
 
     def count_cracks_below_threshold(self, threshold_percent):
