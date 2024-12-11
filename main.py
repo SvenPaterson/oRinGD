@@ -617,16 +617,16 @@ class Canvas(QWidget):
         
             if are_all_cracks_below_25_percent and all_cracks_combined_below_CSD and are_all_external_cracks_below_10_percent:
                 assigned_rating = 1
+
+            elif not are_all_cracks_combined_below_3xCSD or are_there_one_or_more_internal_cracks_each_above_80_percent \
+                 or are_there_three_or_more_internal_cracks_each_above_50_percent or not are_all_external_cracks_below_50_percent:
+                assigned_rating = 4
             
             elif are_all_cracks_below_50_percent and all_cracks_combined_below_2xCSD and are_all_external_cracks_below_25_percent:
                 assigned_rating = 2
 
             elif are_there_two_or_less_internal_cracks_each_between_50_80 and are_all_cracks_combined_below_3xCSD and are_all_external_cracks_below_50_percent:
                 assigned_rating = 3
-
-            elif not are_all_cracks_combined_below_3xCSD or are_there_one_or_more_internal_cracks_each_above_80_percent \
-                 or are_there_three_or_more_internal_cracks_each_above_50_percent or not are_all_external_cracks_below_50_percent:
-                assigned_rating = 4
 
         # Update Overall Evaluation
         overall_evaluation_row = next((row for row in range(self.rating_table_widget.rowCount())
