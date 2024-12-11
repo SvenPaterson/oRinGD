@@ -1,5 +1,5 @@
 import sys
-from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QMessageBox, QTableWidget, QTableWidgetItem, QPushButton, QHeaderView
+from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QMessageBox, QTableWidget, QTableWidgetItem, QPushButton
 from PyQt6.QtGui import QPainter, QMouseEvent, QPen, QPixmap
 from PyQt6.QtCore import Qt, QPointF
 from scipy.interpolate import splprep, splev
@@ -353,10 +353,9 @@ class Canvas(QWidget):
             "# Cracks < 25% CSD",  # Rating 1, Metric 2
             "All external cracks < 10% CSD",  # Rating 1, Metric 3
             "# Cracks < 50% CSD",  # Rating 2, Metric 4
-
+            # Metric 5 and 8 are accounted for by Metric 1
             "All external cracks < 25% CSD",  # Rating 2, Metric 6
             "Two or less Internal Cracks 50-80% CSD",  # Rating 3, Metric 7
-
             "All external cracks < 50% CSD",  # Rating 4, Metric 9
             "At least one Internal Crack > 80% CSD",  # Rating 4, Metric 10
             "Three or more Internal Cracks > 50% CSD",  # Rating 4, Metric 11
@@ -371,10 +370,8 @@ class Canvas(QWidget):
                 "Any number",  # Metric 2
                 "All < 10%",  # Metric 3
                 "-",  # Metric 4
-
                 "-",  # Metric 6
                 "-",  # Metric 7
-\
                 "-",  # Metric 9
                 "-",  # Metric 10
                 "-",  # Metric 11
@@ -386,10 +383,8 @@ class Canvas(QWidget):
                 "-",  # Metric 2
                 "-",  # Metric 3
                 "Any number",  # Metric 4
-
                 "All < 25%",  # Metric 6
                 "-",  # Metric 7
-\
                 "-",  # Metric 9
                 "-",  # Metric 10
                 "-",  # Metric 11
@@ -401,10 +396,8 @@ class Canvas(QWidget):
                 "-",  # Metric 2
                 "-",  # Metric 3
                 "-",  # Metric 4
-
                 "-",  # Metric 6
                 "≤ 2 cracks",  # Metric 7
-\
                 "All < 50%",  # Metric 9
                 "-",  # Metric 10
                 "-",  # Metric 11
@@ -416,10 +409,8 @@ class Canvas(QWidget):
                 "-",  # Metric 2
                 "-",  # Metric 3
                 "-",  # Metric 4
-
                 "-",  # Metric 6
                 "-",  # Metric 7
-\
                 "Any > 50%",  # Metric 9
                 "≥ 1 crack > 80%",  # Metric 10
                 "≥ 3 cracks > 50%",  # Metric 11
@@ -431,10 +422,8 @@ class Canvas(QWidget):
                 "-",  # Metric 2
                 "-",  # Metric 3
                 "-",  # Metric 4
-
                 "-",  # Metric 6
                 "-",  # Metric 7
-\
                 "-",  # Metric 9
                 "-",  # Metric 10
                 "-",  # Metric 11
@@ -453,6 +442,7 @@ class Canvas(QWidget):
         # Populate the metrics and thresholds in the table
         for row, metric in enumerate(metrics):
             self.rating_table_widget.setItem(row, 0, QTableWidgetItem(metric))  # Metric name
+            self.rating_table_widget.setRowHeight(row, 1)
             for col, threshold_key in enumerate(thresholds.keys(), start=2):
                 self.rating_table_widget.setItem(row, col, QTableWidgetItem(thresholds[threshold_key][row]))
 
@@ -617,16 +607,16 @@ class Canvas(QWidget):
         
             if are_all_cracks_below_25_percent and all_cracks_combined_below_CSD and are_all_external_cracks_below_10_percent:
                 assigned_rating = 1
+
+            elif not are_all_cracks_combined_below_3xCSD or are_there_one_or_more_internal_cracks_each_above_80_percent \
+                 or are_there_three_or_more_internal_cracks_each_above_50_percent or not are_all_external_cracks_below_50_percent:
+                assigned_rating = 4
             
             elif are_all_cracks_below_50_percent and all_cracks_combined_below_2xCSD and are_all_external_cracks_below_25_percent:
                 assigned_rating = 2
 
             elif are_there_two_or_less_internal_cracks_each_between_50_80 and are_all_cracks_combined_below_3xCSD and are_all_external_cracks_below_50_percent:
                 assigned_rating = 3
-
-            elif not are_all_cracks_combined_below_3xCSD or are_there_one_or_more_internal_cracks_each_above_80_percent \
-                 or are_there_three_or_more_internal_cracks_each_above_50_percent or not are_all_external_cracks_below_50_percent:
-                assigned_rating = 4
 
         # Update Overall Evaluation
         overall_evaluation_row = next((row for row in range(self.rating_table_widget.rowCount())
@@ -642,8 +632,6 @@ class Canvas(QWidget):
 
         # Refresh the table
         self.rating_table_widget.viewport().update()
-
-
 
     def count_cracks_below_threshold(self, threshold_percent):
         """Count the number of cracks below a given length threshold percentage of CSD."""
@@ -670,6 +658,7 @@ class Canvas(QWidget):
 
         return count
 
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -688,17 +677,19 @@ class MainWindow(QMainWindow):
         # Add the canvas on the left
         self.canvas = Canvas(background_image="C:\\Users\\Stephen.Garden\\oRinGD\\test_2.jpg")
         self.canvas.setMinimumSize(600, 400)  # Set minimum size to ensure it's visible
-        top_layout.addWidget(self.canvas, stretch = 1)
+        top_layout.addWidget(self.canvas, stretch = 5)
 
         # Crack details table widget (right of the canvas)
         self.crack_table_widget = QTableWidget()
         self.crack_table_widget.setColumnCount(3)
         self.crack_table_widget.setHorizontalHeaderLabels(["Crack #", "Type", "Length, % of CSD"])
         self.crack_table_widget.verticalHeader().setVisible(False)  # Hide row numbers for cleanliness
+        self.crack_table_widget.resizeColumnsToContents()
+        self.crack_table_widget.setColumnWidth(1, 60)
         top_layout.addWidget(self.crack_table_widget, stretch=1)
 
         # Add the top layout to the main layout
-        main_layout.addLayout(top_layout, stretch=9)
+        main_layout.addLayout(top_layout, stretch=32)
 
         # Bottom layout: Rating Evaluation Table
         self.rating_table_widget = QTableWidget()
@@ -708,11 +699,11 @@ class MainWindow(QMainWindow):
         )
         self.rating_table_widget.verticalHeader().setVisible(False)  # Hide row labels for cleanliness
 
-        # Alternatively, set specific widths for individual columns
+        # Alternatively, set specific widths for cells
         self.rating_table_widget.setColumnWidth(0, 250)  # Set width for "Metric" column
         self.rating_table_widget.setColumnWidth(1, 120)  # Set width for "Measured Value" column
 
-        main_layout.addWidget(self.rating_table_widget, stretch=4)
+        main_layout.addWidget(self.rating_table_widget, stretch=13)
 
         # Bottom layout for buttons
         button_layout = QHBoxLayout()
@@ -732,6 +723,9 @@ class MainWindow(QMainWindow):
         # Initialize rating table properly
         self.canvas.initialize_rating_table()
 
+        self.show()
+        self.showFullScreen()
+
         # Show instructions for perimeter drawing
         self.show_perimeter_prompt()
 
@@ -748,6 +742,4 @@ class MainWindow(QMainWindow):
 
 app = QApplication(sys.argv)
 window = MainWindow()
-window.show()
-window.showFullScreen()
 sys.exit(app.exec())
