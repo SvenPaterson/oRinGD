@@ -27,9 +27,6 @@ class Canvas(QWidget):
         self.table_widget = table_widget  # Reference to the crack details table widget
         self.rating_table_widget = rating_table_widget  # Reference to the rating table widget
 
-        if self.rating_table_widget:
-            self.initialize_rating_table()  # Initialize rating table during setup
-
     def resizeEvent(self, event):
         """Rescale the background image when the canvas is resized."""
         if self.background:
@@ -77,7 +74,7 @@ class Canvas(QWidget):
 
         # Draw the current crack being defined
         if self.current_crack:
-            pen = QPen(Qt.GlobalColor.white, 5)  # White for temporary undefined cracks
+            pen = QPen(Qt.GlobalColor.black, 5)  # White for cracks under construction
             painter.setPen(pen)
             for i in range(len(self.current_crack) - 1):
                 painter.drawLine(self.current_crack[i], self.current_crack[i + 1])
@@ -162,13 +159,23 @@ class Canvas(QWidget):
 
             # Finalize the crack at the last valid point if it extends outside
             if not self.is_within_perimeter(point):
+                if not self.current_crack:
+                    # If no valid starting point exists inside the perimeter, ignore
+                    return
                 point = self.current_crack[-1]  # Use the last valid point inside the perimeter
                 point = self.snap_to_perimeter(point)
 
-            self.current_crack.append(point)
+            self.current_crack.append(self.snap_to_perimeter(point))
+
+            # Validation: Ignore single-point cracks or cracks with no points inside the perimeter
+            if len(self.current_crack) < 3:
+                self.current_crack = []  # Reset the crack
+                return
+
+            # Classify the crack and add it to the list
             crack_color = self.classify_crack(self.current_crack)
             self.cracks.append((self.current_crack, crack_color))  # Store the completed crack with color
-            self.update_table(self.current_crack, crack_color)
+            self.add_to_crack_table(self.current_crack, crack_color)
             self.update_rating_table()
             self.current_crack = []  # Reset for the next crack
             self.update()
@@ -259,25 +266,6 @@ class Canvas(QWidget):
             self.perimeter_points.remove(closest_point)
             self.update()
 
-    def delete_crack(self, point):
-        """Delete the crack if the right mouse button is clicked near it."""
-        for crack, color in self.cracks:
-            for crack_point in crack:
-                distance = math.hypot(crack_point.x() - point.x(), crack_point.y() - point.y())
-                if distance < 10:  # If the clicked point is close to any point in a crack
-                    self.cracks.remove((crack, color))
-                    self.update()
-
-                    # Update the crack details table
-                    if self.table_widget:
-                        self.update_crack_details_table()
-
-                    # Update the rating evaluation table
-                    if self.rating_table_widget:
-                        self.update_rating_table()
-
-                    return
-
     def classify_crack(self, crack):
         """Determine the type of crack based on if endpoints are snapped to the perimeter."""
         snap_count = sum(1 for point in [crack[0], crack[-1]] if point in self.perimeter_spline)
@@ -291,8 +279,8 @@ class Canvas(QWidget):
         else:
             return Qt.GlobalColor.white  # Fail-safe color for undefined classification
 
-    def update_table(self, crack, color):
-        """Update the table with the crack details."""
+    def add_to_crack_table(self, crack, color):
+        """Adds new crack to crack details table"""
         if self.table_widget:
             row_position = self.table_widget.rowCount()
             self.table_widget.insertRow(row_position)
@@ -331,9 +319,27 @@ class Canvas(QWidget):
             item_crack_length.setTextAlignment(Qt.AlignmentFlag.AlignCenter)  # Center-align
             self.table_widget.setItem(row_position, 2, item_crack_length)
 
+    def delete_crack(self, point):
+        """Delete the crack if the right mouse button is clicked near it."""
+        for crack, color in self.cracks:
+            for crack_point in crack:
+                distance = math.hypot(crack_point.x() - point.x(), crack_point.y() - point.y())
+                if distance < 10:  # If the clicked point is close to any point in a crack
+                    self.cracks.remove((crack, color))
+                    self.update()
 
-    def update_crack_details_table(self):
-        """Update the crack details table with the current cracks information."""
+                    # Update the crack details table
+                    if self.table_widget:
+                        self.update_crack_table()
+
+                    # Update the rating evaluation table
+                    if self.rating_table_widget:
+                        self.update_rating_table()
+
+                    return
+                
+    def update_crack_table(self):
+        """Update the crack details table, used when a crack is deleted."""
         if not self.table_widget:
             return
 
@@ -374,26 +380,26 @@ class Canvas(QWidget):
 
         # Define the metrics and their descriptions
         metrics = [
-            "total crack len. (% of CSD)",  # Rating 1, Metric 1
-            "# cracks < 25% CSD",  # Rating 1, Metric 2
-            "all ext. cracks < 10% CSD",  # Rating 1, Metric 3
-            "# cracks < 50% CSD",  # Rating 2, Metric 4
+            "Total crack length (% of CSD)",  # Rating 1, Metric 1
+            "# cracks that are <25% CSD",  # Rating 1, Metric 2
+            "All ext. cracks that are <10% CSD",  # Rating 1, Metric 3
+            "# cracks that are <50% CSD",  # Rating 2, Metric 4
             # Metric 5 and 8 are accounted for by Metric 1
-            "all ext. cracks < 25% CSD",  # Rating 2, Metric 6
-            "≤ 2 Cracks: 50-80% CSD",  # Rating 3, Metric 7
-            "all ext cracks < 50% CSD",  # Rating 4, Metric 9
-            "≥ 1 int. crack > 80% CSD",  # Rating 4, Metric 10
-            "≥ 3 int. cracks > 50% CSD",  # Rating 4, Metric 11
-            "splits present",  # Rating 5, Metric 12
+            "All ext. cracks that are <25% CSD",  # Rating 2, Metric 6
+            "Are there 2 or fewer cracks between 50-80% CSD",  # Rating 3, Metric 7
+            "All ext. cracks are <50% CSD",  # Rating 4, Metric 9
+            "One or more int. cracks that are >80% CSD",  # Rating 4, Metric 10
+            "Three or more int. cracks that are >50% CSD",  # Rating 4, Metric 11
+            "Any splits present",  # Rating 5, Metric 12
             "OVERALL RATING"  # Final result
         ]
 
         # Define thresholds for each metric across all ratings
         thresholds = {
             "Rating 1": [
-                "≤ 100% CSD",  # Metric 1
+                "≤100% CSD",  # Metric 1
                 "Any number",  # Metric 2
-                "All < 10%",  # Metric 3
+                "All <10%",  # Metric 3
                 "-",  # Metric 4
                 "-",  # Metric 6
                 "-",  # Metric 7
@@ -404,11 +410,11 @@ class Canvas(QWidget):
                 "Pass"  # Overall Evaluation
             ],
             "Rating 2": [
-                "≤ 200% CSD",  # Metric 1
+                "≤200% CSD",  # Metric 1
                 "-",  # Metric 2
                 "-",  # Metric 3
                 "Any number",  # Metric 4
-                "All < 25%",  # Metric 6
+                "All <25%",  # Metric 6
                 "-",  # Metric 7
                 "-",  # Metric 9
                 "-",  # Metric 10
@@ -417,13 +423,13 @@ class Canvas(QWidget):
                 "Pass"  # Overall Evaluation
             ],
             "Rating 3": [
-                "≤ 300% CSD",  # Metric 1
+                "≤300% CSD",  # Metric 1
                 "-",  # Metric 2
                 "-",  # Metric 3
                 "-",  # Metric 4
                 "-",  # Metric 6
-                "≤ 2 cracks",  # Metric 7
-                "All < 50%",  # Metric 9
+                "≤2 cracks",  # Metric 7
+                "All <50%",  # Metric 9
                 "-",  # Metric 10
                 "-",  # Metric 11
                 "-",  # Metric 12
@@ -436,9 +442,9 @@ class Canvas(QWidget):
                 "-",  # Metric 4
                 "-",  # Metric 6
                 "-",  # Metric 7
-                "Any > 50%",  # Metric 9
-                "≥ 1 crack > 80%",  # Metric 10
-                "≥ 3 cracks > 50%",  # Metric 11
+                "Any >50%",  # Metric 9
+                "≥1 crack >80%",  # Metric 10
+                "≥3 cracks >50%",  # Metric 11
                 "-",  # Metric 12
                 "Fail"  # Overall Evaluation
             ],
@@ -464,15 +470,25 @@ class Canvas(QWidget):
         # Set the header labels
         self.rating_table_widget.setHorizontalHeaderLabels(["Metric", "Value"] + list(thresholds.keys()))
 
+        # Make the rows stretch to fill the vertical space
+        vertical_header = self.rating_table_widget.verticalHeader()
+        vertical_header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
+        # Organize horizontal spacing
+        self.rating_table_widget.resizeColumnsToContents()
+        header = self.rating_table_widget.horizontalHeader()
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.rating_table_widget.setColumnWidth(0, 275)  # Set width for "Metric" column
+
         # Populate the metrics and thresholds in the table
         for row, metric in enumerate(metrics):
             self.rating_table_widget.setItem(row, 0, QTableWidgetItem(metric))  # Metric name
             for col, threshold_key in enumerate(thresholds.keys(), start=2):
-                self.rating_table_widget.setItem(row, col, QTableWidgetItem(thresholds[threshold_key][row]))
-
-        # Make the rows stretch to fill the vertical space
-        vertical_header = self.rating_table_widget.verticalHeader()
-        vertical_header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+                self.rating_table_widget.setColumnWidth(col, 90)
+                threshold_item = QTableWidgetItem(thresholds[threshold_key][row])
+                threshold_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)  # Center-align threshold content
+                self.rating_table_widget.setItem(row, col, threshold_item)
+            
 
     def update_rating_table(self):
         """Update the rating evaluation table with the measured values for each metric."""
@@ -508,7 +524,9 @@ class Canvas(QWidget):
         # Metric 1: Total Crack Length (% of CSD)
         combined_length_all_cracks = (total_crack_length / csd) * 100 if csd > 0 else 0
         all_cracks_combined_below_CSD = combined_length_all_cracks <= 100
-        self.rating_table_widget.setItem(0, 1, QTableWidgetItem(f"{combined_length_all_cracks:.2f}%"))
+        value_item = QTableWidgetItem(f"{combined_length_all_cracks:.2f}%")
+        value_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.rating_table_widget.setItem(0, 1, value_item)
 
         # Highlight the current threshold for Metric 1
         if combined_length_all_cracks <= 100:
@@ -530,32 +548,40 @@ class Canvas(QWidget):
         # Metric 2: # Cracks < 25% CSD
         cracks_below_25_percent = sum(1 for length, _ in crack_lengths if (length / csd) * 100 < 25)
         are_all_cracks_below_25_percent = all((length / csd) * 100 < 25 for length, _ in crack_lengths)
-        self.rating_table_widget.setItem(1, 1, QTableWidgetItem(str(cracks_below_25_percent)))
-
-        # if are_all_cracks_below_25_percent:
+        value_item = QTableWidgetItem(str(cracks_below_25_percent))
+        value_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.rating_table_widget.setItem(1, 1, value_item)
 
         # Metric 3: All external cracks should be < 10% CSD
         are_all_external_cracks_below_10_percent = all((length / csd) * 100 < 10 for length, color in crack_lengths if color == Qt.GlobalColor.yellow)
-        self.rating_table_widget.setItem(2, 1, QTableWidgetItem("Yes" if are_all_external_cracks_below_10_percent else "No"))
+        value_item = QTableWidgetItem("Yes" if are_all_external_cracks_below_10_percent else "No")
+        value_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.rating_table_widget.setItem(2, 1, value_item)
 
         ## Rating 2 conditions
         # Metric 4: # Cracks < 50% CSD
         num_cracks_below_50_percent = sum(1 for length, _ in crack_lengths if (length / csd) * 100 < 50)
         are_all_cracks_below_50_percent = all((length / csd) * 100 < 50 for length, _ in crack_lengths)
-        self.rating_table_widget.setItem(3, 1, QTableWidgetItem(str(num_cracks_below_50_percent)))
+        value_item = QTableWidgetItem(str(num_cracks_below_50_percent))
+        value_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.rating_table_widget.setItem(3, 1, value_item)
 
         # Metric 5: Total Crack Length (% of CSD) below 2 x CSD
         all_cracks_combined_below_2xCSD = combined_length_all_cracks <= 200
         
         # Metric 6: All external cracks < 25% CSD
         are_all_external_cracks_below_25_percent = all((length / csd) * 100 < 25 for length, color in crack_lengths if color == Qt.GlobalColor.yellow)
-        self.rating_table_widget.setItem(4, 1, QTableWidgetItem("Yes" if are_all_external_cracks_below_25_percent else "No"))
+        value_item = QTableWidgetItem("Yes" if are_all_external_cracks_below_25_percent else "No")
+        value_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.rating_table_widget.setItem(4, 1, value_item)
 
         ## Rating 3 conditions
         # Metric 7: Two or less Internal Cracks 50-80% CSD
         num_internal_cracks_50_80_percent = sum(1 for length, color in crack_lengths if color == Qt.GlobalColor.blue and 50 <= (length / csd) * 100 <= 80)
         are_there_two_or_less_internal_cracks_each_between_50_80 = num_internal_cracks_50_80_percent <= 2
-        self.rating_table_widget.setItem(5, 1, QTableWidgetItem(str(are_there_two_or_less_internal_cracks_each_between_50_80)))
+        value_item = QTableWidgetItem(str(are_there_two_or_less_internal_cracks_each_between_50_80))
+        value_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.rating_table_widget.setItem(5, 1, value_item)
 
         # Metric 8: Total Crack Length (% of CSD) below 3 x csd
         are_all_cracks_combined_below_3xCSD = combined_length_all_cracks <= 300
@@ -563,22 +589,30 @@ class Canvas(QWidget):
         ## Rating 4 conditions
         # Metric 9: All external cracks < 50% CSD
         are_all_external_cracks_below_50_percent = all((length / csd) * 100 < 50 for length, color in crack_lengths if color == Qt.GlobalColor.yellow)
-        self.rating_table_widget.setItem(6, 1, QTableWidgetItem("Yes" if are_all_external_cracks_below_50_percent else "No"))
+        value_item = QTableWidgetItem("Yes" if are_all_external_cracks_below_50_percent else "No")
+        value_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.rating_table_widget.setItem(6, 1, value_item)
 
         # Metric 10: At least one internal crack > 80% CSD
         num_internal_cracks_above_80_percent = sum(1 for length, color in crack_lengths if color == Qt.GlobalColor.blue and (length / csd) * 100 > 80)
         are_there_one_or_more_internal_cracks_each_above_80_percent = num_internal_cracks_above_80_percent >= 1
-        self.rating_table_widget.setItem(7, 1, QTableWidgetItem("Yes" if are_there_one_or_more_internal_cracks_each_above_80_percent else "No"))
+        value_item = QTableWidgetItem("Yes" if are_there_one_or_more_internal_cracks_each_above_80_percent else "No")
+        value_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.rating_table_widget.setItem(7, 1, value_item)
 
         # Metric 12: Three or more internal cracks, each > 50% CSD
         num_internal_cracks_above_50_percent = sum(1 for length, color in crack_lengths if color == Qt.GlobalColor.blue and (length / csd) * 100 > 50)
         are_there_three_or_more_internal_cracks_each_above_50_percent = num_internal_cracks_above_50_percent >= 3
-        self.rating_table_widget.setItem(8, 1, QTableWidgetItem("Yes" if are_there_three_or_more_internal_cracks_each_above_50_percent else "No"))
+        value_item = QTableWidgetItem("Yes" if are_there_three_or_more_internal_cracks_each_above_50_percent else "No")
+        value_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.rating_table_widget.setItem(8, 1, value_item)
 
         # Rating 5 conditions
         # Metric 13: Presence of Splits (color = red)
         are_any_splits_present = any(color == Qt.GlobalColor.red for _, color in crack_lengths)
-        self.rating_table_widget.setItem(9, 1, QTableWidgetItem("Yes" if are_any_splits_present else "No"))
+        value_item = QTableWidgetItem("Yes" if are_any_splits_present else "No")
+        value_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.rating_table_widget.setItem(9, 1, value_item)
 
         ## Final Evaluation
         are_any_cracks_present = bool(crack_lengths)
@@ -609,13 +643,14 @@ class Canvas(QWidget):
 
         # Update Overall Evaluation
         overall_evaluation_row = next((row for row in range(self.rating_table_widget.rowCount())
-                                    if self.rating_table_widget.item(row, 0) and self.rating_table_widget.item(row, 0).text() == "Overall Evaluation"), None)
+                                    if self.rating_table_widget.item(row, 0) and self.rating_table_widget.item(row, 0).text() == "OVERALL RATING"), None)
         overall_evaluation = "Pass" if assigned_rating <= 3 else "Fail"
 
         if overall_evaluation_row is not None:
             overall_evaluation_text = f"Rating: {assigned_rating} - {overall_evaluation}"
             self.rating_table_widget.setItem(overall_evaluation_row, 1, QTableWidgetItem(overall_evaluation_text))
             evaluation_item = self.rating_table_widget.item(overall_evaluation_row, 1)
+            evaluation_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             if evaluation_item:
                 evaluation_item.setBackground(Qt.GlobalColor.green if overall_evaluation == "Pass" else Qt.GlobalColor.red)
 
@@ -625,9 +660,11 @@ class Canvas(QWidget):
 
 class MainWindow(QMainWindow):
     def __init__(self):
+        window_size = [850, 900]
         super().__init__()
         self.setWindowTitle("PyQt6 O-Ring Analyzer")
-        self.resize(850, 900)  # Set initial size to ensure better fit for canvas and tables
+        self.resize(window_size[0], window_size[1])  # Set initial size to ensure better fit for canvas and tables
+        self.setFixedSize(window_size[0], window_size[1])
 
         centralWidget = QWidget()
         self.setCentralWidget(centralWidget)
@@ -670,10 +707,6 @@ class MainWindow(QMainWindow):
         )
         self.rating_table_widget.verticalHeader().setVisible(False)  # Hide row labels for cleanliness
 
-        # Alternatively, set specific widths for cells
-        self.rating_table_widget.setColumnWidth(0, 175)  # Set width for "Metric" column
-        self.rating_table_widget.setColumnWidth(1, 100)  # Set width for "Measured Value" column
-
         main_layout.addWidget(self.rating_table_widget, stretch=17)
 
         # Bottom layout for buttons
@@ -698,8 +731,7 @@ class MainWindow(QMainWindow):
 
         # Initialize rating table properly
         self.canvas.initialize_rating_table()
-        self.rating_table_widget.resizeColumnsToContents()
-
+        
         self.show()
         # self.showFullScreen()
 
