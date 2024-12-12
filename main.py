@@ -230,6 +230,7 @@ class Canvas(QWidget):
             self.perimeter_points = [] # clear the points from the screen
             self.drawing_cracks = True
             self.update_rating_table()
+            self.show_crack_prompt()
         else:
             # Cancel deletes the generated loop and allows the user to edit points again
             self.perimeter_spline = []
@@ -657,6 +658,15 @@ class Canvas(QWidget):
         # Refresh the table
         self.rating_table_widget.viewport().update()
 
+    def show_crack_prompt(self):
+        QMessageBox.information(
+            self,
+            "Trace cracks",
+            "Click and drag the left-mouse button to trace the visible cracks on the o-ring.\n\n"
+            "Release the left-mouse button to confirm a crack and add it to the analysis.\n\n"
+            "You may use the right-mouse button to delete any number of drawn cracks from the analysis.\n\n"
+            "You can click the 'Clear Session' button to re-start the analysis.\n"
+        )
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -713,7 +723,7 @@ class MainWindow(QMainWindow):
         button_layout = QHBoxLayout()
 
         # Restart / Clear Button
-        clearButton = QPushButton("Clear Canvas")
+        clearButton = QPushButton("Clear Session")
         clearButton.clicked.connect(self.clear_session)
         button_layout.addWidget(clearButton)
 
@@ -753,12 +763,13 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "Set Perimeter",
-            "Please click to add points around the perimeter of the o-ring.\n"
-            "When finished, click the middle mouse button to generate the loop and review the line fit.\n"
+            "Use the left-mouse button to add points around the perimeter of the o-ring.\n\n"
+            "When finished, click the middle mouse button to generate the loop and review the line fit.\n\n"
+            "You may use the right-mouse button to delete any points or the fitted perimeter line before confirming.\n\n"
             "Once happy, click the middle mouse button again to confirm.\n"
-            "You can also use the right mouse button to delete any points before confirming.\n"
-            "After confirming, if you right-click, the perimeter will disappear and you can edit points again."
         )
+
+    
 
 app = QApplication(sys.argv)
 window = MainWindow()
