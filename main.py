@@ -149,7 +149,6 @@ class Canvas(QWidget):
             if len(self.current_crack) >= 1: 
                 self.current_crack.append(current_point)
             else:
-                print("first point has been captured")
                 self.current_crack.append(self.snap_to_perimeter(current_point))  # Add points to the crack
             self.update()
 
@@ -252,7 +251,6 @@ class Canvas(QWidget):
                 min_distance = distance
 
         if min_distance <= threshold:
-            print(f"point was snapped: {closest_point}")
             return closest_point
         else: return point
 
