@@ -1,14 +1,36 @@
 import sys
-from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QMessageBox, QTableWidget, QTableWidgetItem, QPushButton, QHeaderView
-from PyQt6.QtGui import QPainter, QMouseEvent, QPen, QPixmap
-from PyQt6.QtCore import Qt, QPointF
-from scipy.interpolate import splprep, splev
-import numpy as np
 import math
+import tempfile
+import datetime
+import os
+
+import numpy as np
+from scipy.interpolate import splprep, splev
+
+from PyQt6.QtCore import Qt, QPointF
+from PyQt6.QtGui import QPainter, QMouseEvent, QPen, QPixmap
+from PyQt6.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QMessageBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QPushButton,
+    QHeaderView,
+    QFileDialog,
+)
+
+from openpyxl import Workbook
+from openpyxl.drawing.image import Image
+
 
 class Canvas(QWidget):
     def __init__(self, background_image=None, table_widget=None, rating_table_widget=None):
         super().__init__()
+        self.background_img = background_image
         self.background = QPixmap(background_image) if background_image else None
         if self.background and not self.background.isNull():
             print("Image loaded successfully.")
@@ -178,7 +200,15 @@ class Canvas(QWidget):
             self.update_rating_table()
             self.current_crack = []  # Reset for the next crack
             self.update()
-
+    
+    def loadImage(self, file_path):
+        """Load a new image into the canvas."""
+        self.clearCanvas()
+        self.background_image = file_path
+        self.background = QPixmap(file_path)
+        self.scaled_background = None  # Force rescaling
+        self.update()
+    
     def clearCanvas(self):
         """Clear everything: perimeter and cracks."""
         self.perimeter_points = []
@@ -670,7 +700,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         window_size = [850, 900]
         super().__init__()
-        self.setWindowTitle("PyQt6 O-Ring Analyzer")
+        self.setWindowTitle("oRinGD - ISO23939-2 Annex B Analyzer")
         self.resize(window_size[0], window_size[1])  # Set initial size to ensure better fit for canvas and tables
         self.setFixedSize(window_size[0], window_size[1])
 
@@ -684,7 +714,7 @@ class MainWindow(QMainWindow):
         top_layout = QHBoxLayout()
 
         # Add the canvas on the left
-        self.canvas = Canvas(background_image="C:\\Users\\Stephen.Garden\\oRinGD\\test_2.jpg")
+        self.canvas = Canvas() # background_image="C:\\Users\\Stephen.Garden\\oRinGD\\test_2.jpg"
         self.canvas.setMinimumSize(600, 400)  # Set minimum size to ensure it's visible
         top_layout.addWidget(self.canvas)
 
@@ -720,10 +750,20 @@ class MainWindow(QMainWindow):
         # Bottom layout for buttons
         button_layout = QHBoxLayout()
 
+        # Image Selection Button
+        imageButton = QPushButton("Select Image")
+        imageButton.clicked.connect(self.select_image)
+        button_layout.addWidget(imageButton)
+
         # Restart / Clear Button
         clearButton = QPushButton("Clear Session")
         clearButton.clicked.connect(self.clear_session)
         button_layout.addWidget(clearButton)
+
+        # Save Analysis Button
+        saveReportButton = QPushButton("Save Report")
+        saveReportButton.clicked.connect(self.saveAsExcel)
+        button_layout.addWidget(saveReportButton)
 
         # Close button
         closeButton = QPushButton("Close")
@@ -767,6 +807,100 @@ class MainWindow(QMainWindow):
             "Once happy, click the middle mouse button again to confirm.\n"
         )
 
+    def select_image(self):
+        """Open a file dialog to select an image and load it into the canvas."""
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select O-Ring Image", "", "Images (*.png *.jpg *.jpeg *.bmp)")
+        if file_path:
+            self.canvas.loadImage(file_path)
+
+    def saveCanvas(self, file_path=0, suppress_conf=False):
+        if not file_path:
+            file_path, _ = QFileDialog.getSaveFileName(self,
+                                                   "Save Image",
+                                                   "",
+                                                   "PNG Files (*.png);;All Files (*)")
+        if file_path:
+            pixmap = self.canvas.grab()
+            pixmap.save(file_path)
+            if not suppress_conf:
+                QMessageBox.information(self, "Success", f"Image saved to {file_path}")
+
+    def saveAsExcel(self):
+        # Ensure an image is loaded first
+        if not self.canvas.background_image:
+            QMessageBox.warning(self, "No Image!", "No image has been loaded. Please load an image first.")
+            return
+        
+        # Extract the file name from the loaded image path
+        image_path = self.canvas.background_image
+        image_name = os.path.basename(image_path) # e.g. "sample1.png"
+        base_name = os.path.splitext(image_name)[0] # e.g. "sample1"
+        
+        # Suggest a default report name
+        current_date = datetime.datetime.now().strftime("%m%d%Y")
+        default_report_name = f"{base_name} - report - {current_date}.xlsx"
+        file_path, _ = QFileDialog.getSaveFileName(self, 
+                                                   "Save Report", 
+                                                   default_report_name, 
+                                                   "Excel Files (*.xlsx);;All Files (*)")
+        
+        if file_path:
+            # Create an Excel workbook
+            workbook = Workbook()
+
+            # 1. Save the annotated image
+            image_sheet = workbook.active
+            image_sheet.title = f"{base_name} Analysis"
+
+            # Use saveCanvas to create a temporary PNG file
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
+                temp_image_path = temp_file.name
+            self.saveCanvas(temp_image_path, suppress_conf=True)
+
+            # Add the temporary image to the Excel workbook
+            excel_image = Image(temp_image_path)
+            image_sheet.add_image(excel_image, "B2")
+
+            # Save the headers for the results table
+            header_row = 2  # Adjust as necessary
+            for col in range(self.rating_table_widget.columnCount()):
+                header_item = self.rating_table_widget.horizontalHeaderItem(col)
+                header_value = header_item.text() if header_item else ""
+                header_cell = image_sheet.cell(row=header_row, column=12 + col)  # Headers start at row 2, column L
+                header_cell.value = header_value
+
+            # Save the results table rows below the headers
+            start_row = header_row + 1  # Data starts just below the headers
+            for row in range(self.rating_table_widget.rowCount()):
+                for col in range(self.rating_table_widget.columnCount()):
+                    item = self.rating_table_widget.item(row, col)
+                    value = item.text() if item else ""
+                    cell = image_sheet.cell(row=start_row + row, column=12 + col)
+                    cell.value = value
+
+            # Manually set column widths
+            image_sheet.column_dimensions["L"].width = 50  # Set width for column L
+            for col_letter in ["M", "N", "O", "P", "Q", "R"]:
+                image_sheet.column_dimensions[col_letter].width = 20  # Set width for columns M through R
+
+
+                
+            # 2. Save the crack list
+            crack_sheet = workbook.create_sheet("Crack List")
+            crack_sheet.append(["Crack #", "Type", "Length (% of CSD)"])
+            for row in range(self.crack_table_widget.rowCount()):
+                crack_sheet.append([
+                    self.crack_table_widget.item(row, 0).text(),
+                    self.crack_table_widget.item(row, 1).text(),
+                    self.crack_table_widget.item(row, 2).text()
+                ])
+            
+            # Save the workbook
+            workbook.save(file_path)
+            QMessageBox.information(self, "Success", f"Report saved to {file_path}")
+
+            # Clean up the temporary image file
+            os.remove(temp_image_path)
     
 
 app = QApplication(sys.argv)
