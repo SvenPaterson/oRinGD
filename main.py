@@ -1,5 +1,5 @@
 import sys
-from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QMessageBox, QTableWidget, QTableWidgetItem, QPushButton
+from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QMessageBox, QTableWidget, QTableWidgetItem, QPushButton, QHeaderView
 from PyQt6.QtGui import QPainter, QMouseEvent, QPen, QPixmap
 from PyQt6.QtCore import Qt, QPointF
 from scipy.interpolate import splprep, splev
@@ -132,7 +132,6 @@ class Canvas(QWidget):
                 # If the starting point is outside the perimeter, wait for the user to cross inwards
                 if not self.is_within_perimeter(point):
                     self.current_crack = []  # Don't start the crack yet
-                    self.last_outside_point = point  # Track the last outside point
                 else:
                     # Snap the starting point to the perimeter if applicable
                     snapped_point = self.snap_to_perimeter(point)
@@ -149,8 +148,12 @@ class Canvas(QWidget):
             # Prevent adding points outside the perimeter
             if not self.is_within_perimeter(current_point):
                 return
-
-            self.current_crack.append(current_point)  # Add points to the crack
+            
+            if len(self.current_crack) >= 1: 
+                self.current_crack.append(current_point)
+            else:
+                print("first point has been captured")
+                self.current_crack.append(self.snap_to_perimeter(current_point))  # Add points to the crack
             self.update()
 
     def mouseReleaseEvent(self, event: QMouseEvent):
@@ -160,6 +163,7 @@ class Canvas(QWidget):
             # Finalize the crack at the last valid point if it extends outside
             if not self.is_within_perimeter(point):
                 point = self.current_crack[-1]  # Use the last valid point inside the perimeter
+                point = self.snap_to_perimeter(point)
 
             self.current_crack.append(point)
             crack_color = self.classify_crack(self.current_crack)
@@ -203,7 +207,7 @@ class Canvas(QWidget):
         x = [point.x() for point in self.perimeter_points]
         y = [point.y() for point in self.perimeter_points]
         tck, _ = splprep([x, y], s=0, per=True)  # Create a periodic spline
-        spline_x, spline_y = splev(np.linspace(0, 1, 200), tck)  # Increase the resolution to 200 points
+        spline_x, spline_y = splev(np.linspace(0, 1, 1000), tck)  # Increase the resolution to 1000 points
 
         # Convert spline points back to QPointF
         self.perimeter_spline = [QPointF(px, py) for px, py in zip(spline_x, spline_y)]
@@ -229,7 +233,7 @@ class Canvas(QWidget):
         self.update()
         self.update_rating_table()
 
-    def snap_to_perimeter(self, point, threshold=5):
+    def snap_to_perimeter(self, point, threshold=15):
         """Snap the point to the nearest perimeter point if within threshold."""
         if len(self.perimeter_spline) < 3:
             return point  # No snapping if the perimeter is not defined
@@ -243,8 +247,10 @@ class Canvas(QWidget):
                 closest_point = perimeter_point
                 min_distance = distance
 
-        # Return the closest perimeter point if within threshold, otherwise return the original point
-        return closest_point if min_distance <= threshold else point
+        if min_distance <= threshold:
+            print(f"point was snapped: {closest_point}")
+            return closest_point
+        else: return point
 
     def delete_closest_point(self, point):
         """Delete the closest perimeter point to the given point."""
@@ -284,7 +290,7 @@ class Canvas(QWidget):
             return Qt.GlobalColor.blue  # Internal crack
         elif snap_count == 1:
             return Qt.GlobalColor.yellow  # External crack (crossing perimeter once)
-        elif snap_count == 2:
+        elif snap_count >= 2:
             return Qt.GlobalColor.red  # Split crack (crossing perimeter twice)
         else:
             return Qt.GlobalColor.white  # Fail-safe color for undefined classification
@@ -317,9 +323,18 @@ class Canvas(QWidget):
             combined_length_all_cracks = (crack_length / csd) * 100 if csd > 0 else 0
 
             # Fill in table values
-            self.table_widget.setItem(row_position, 0, QTableWidgetItem(str(row_position + 1)))
-            self.table_widget.setItem(row_position, 1, QTableWidgetItem(crack_type))
-            self.table_widget.setItem(row_position, 2, QTableWidgetItem(f"{combined_length_all_cracks:.2f}%"))
+            item_crack_number = QTableWidgetItem(str(row_position + 1))
+            item_crack_number.setTextAlignment(Qt.AlignmentFlag.AlignCenter)  # Center-align
+            self.table_widget.setItem(row_position, 0, item_crack_number)
+
+            item_crack_type = QTableWidgetItem(crack_type)
+            item_crack_type.setTextAlignment(Qt.AlignmentFlag.AlignCenter)  # Center-align
+            self.table_widget.setItem(row_position, 1, item_crack_type)
+
+            item_crack_length = QTableWidgetItem(f"{combined_length_all_cracks:.2f}%")
+            item_crack_length.setTextAlignment(Qt.AlignmentFlag.AlignCenter)  # Center-align
+            self.table_widget.setItem(row_position, 2, item_crack_length)
+
 
     def update_crack_details_table(self):
         """Update the crack details table with the current cracks information."""
@@ -363,23 +378,23 @@ class Canvas(QWidget):
 
         # Define the metrics and their descriptions
         metrics = [
-            "Total Crack Length (% of CSD)",  # Rating 1, Metric 1
-            "# Cracks < 25% CSD",  # Rating 1, Metric 2
-            "All external cracks < 10% CSD",  # Rating 1, Metric 3
-            "# Cracks < 50% CSD",  # Rating 2, Metric 4
+            "total crack len. (% of CSD)",  # Rating 1, Metric 1
+            "# cracks < 25% CSD",  # Rating 1, Metric 2
+            "all ext. cracks < 10% CSD",  # Rating 1, Metric 3
+            "# cracks < 50% CSD",  # Rating 2, Metric 4
             # Metric 5 and 8 are accounted for by Metric 1
-            "All external cracks < 25% CSD",  # Rating 2, Metric 6
-            "Two or less Internal Cracks 50-80% CSD",  # Rating 3, Metric 7
-            "All external cracks < 50% CSD",  # Rating 4, Metric 9
-            "At least one Internal Crack > 80% CSD",  # Rating 4, Metric 10
-            "Three or more Internal Cracks > 50% CSD",  # Rating 4, Metric 11
-            "Presence of Splits",  # Rating 5, Metric 12
+            "all ext. cracks < 25% CSD",  # Rating 2, Metric 6
+            "≤ 2 Cracks: 50-80% CSD",  # Rating 3, Metric 7
+            "all ext cracks < 50% CSD",  # Rating 4, Metric 9
+            "≥ 1 int. crack > 80% CSD",  # Rating 4, Metric 10
+            "≥ 3 int. cracks > 50% CSD",  # Rating 4, Metric 11
+            "splits present",  # Rating 5, Metric 12
             "Overall Evaluation"  # Final result
         ]
 
         # Define thresholds for each metric across all ratings
         thresholds = {
-            "Threshold (1)": [
+            "Rating 1": [
                 "≤ 100% CSD",  # Metric 1
                 "Any number",  # Metric 2
                 "All < 10%",  # Metric 3
@@ -392,7 +407,7 @@ class Canvas(QWidget):
                 "-",  # Metric 12
                 "Pass"  # Overall Evaluation
             ],
-            "Threshold (2)": [
+            "Rating 2": [
                 "≤ 200% CSD",  # Metric 1
                 "-",  # Metric 2
                 "-",  # Metric 3
@@ -405,7 +420,7 @@ class Canvas(QWidget):
                 "-",  # Metric 12
                 "Pass"  # Overall Evaluation
             ],
-            "Threshold (3)": [
+            "Rating 3": [
                 "≤ 300% CSD",  # Metric 1
                 "-",  # Metric 2
                 "-",  # Metric 3
@@ -418,7 +433,7 @@ class Canvas(QWidget):
                 "-",  # Metric 12
                 "Pass"  # Overall Evaluation
             ],
-            "Threshold (4)": [
+            "Rating 4": [
                 "> 300% CSD",  # Metric 1
                 "-",  # Metric 2
                 "-",  # Metric 3
@@ -431,7 +446,7 @@ class Canvas(QWidget):
                 "-",  # Metric 12
                 "Fail"  # Overall Evaluation
             ],
-            "Threshold (5)": [
+            "Rating 5": [
                 "-",  # Metric 1
                 "-",  # Metric 2
                 "-",  # Metric 3
@@ -451,7 +466,7 @@ class Canvas(QWidget):
         self.rating_table_widget.setColumnCount(len(thresholds) + 2)  # Metric, Measured Value, Thresholds
 
         # Set the header labels
-        self.rating_table_widget.setHorizontalHeaderLabels(["Metric", "Measured Value"] + list(thresholds.keys()))
+        self.rating_table_widget.setHorizontalHeaderLabels(["Metric", "Value"] + list(thresholds.keys()))
 
         # Populate the metrics and thresholds in the table
         for row, metric in enumerate(metrics):
@@ -572,7 +587,7 @@ class Canvas(QWidget):
         are_any_cracks_present = bool(crack_lengths)
 
         ### DEBUG CODE ###
-        # Rating 5 Conditions
+        """ # Rating 5 Conditions
         print("Rating 5 Conditions:")
         print(f"are_any_splits_present: {are_any_splits_present}")
 
@@ -605,7 +620,7 @@ class Canvas(QWidget):
         print(f"are_there_three_or_more_internal_cracks_each_above_50_percent: {are_there_three_or_more_internal_cracks_each_above_50_percent}")
         print(f"not_are_all_external_cracks_below_50_percent: {not are_all_external_cracks_below_50_percent}")
         print()
-        print()
+        print() """
         ###
 
         # Step 1: Evaluate Rating 5 (Any split at all)
@@ -677,7 +692,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PyQt6 O-Ring Analyzer")
-        self.resize(1200, 800)  # Set initial size to ensure better fit for canvas and tables
+        self.resize(850, 900)  # Set initial size to ensure better fit for canvas and tables
 
         centralWidget = QWidget()
         self.setCentralWidget(centralWidget)
@@ -691,15 +706,22 @@ class MainWindow(QMainWindow):
         # Add the canvas on the left
         self.canvas = Canvas(background_image="C:\\Users\\Stephen.Garden\\oRinGD\\test_2.jpg")
         self.canvas.setMinimumSize(600, 400)  # Set minimum size to ensure it's visible
-        top_layout.addWidget(self.canvas, stretch = 5)
+        top_layout.addWidget(self.canvas, stretch = 1)
 
         # Crack details table widget (right of the canvas)
         self.crack_table_widget = QTableWidget()
         self.crack_table_widget.setColumnCount(3)
         self.crack_table_widget.setHorizontalHeaderLabels(["Crack #", "Type", "Length, % of CSD"])
         self.crack_table_widget.verticalHeader().setVisible(False)  # Hide row numbers for cleanliness
-        self.crack_table_widget.resizeColumnsToContents()
-        self.crack_table_widget.setColumnWidth(1, 60)
+
+        # Set specific column widths for the first two columns
+        self.crack_table_widget.setColumnWidth(0, 50)  # Fixed width for column 0
+        self.crack_table_widget.setColumnWidth(1, 75)   # Fixed width for column 1
+
+        # Set the third column to stretch and fill the remaining space
+        header = self.crack_table_widget.horizontalHeader()
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+
         top_layout.addWidget(self.crack_table_widget, stretch=1)
 
         # Add the top layout to the main layout
@@ -709,13 +731,13 @@ class MainWindow(QMainWindow):
         self.rating_table_widget = QTableWidget()
         self.rating_table_widget.setColumnCount(7)
         self.rating_table_widget.setHorizontalHeaderLabels(
-            ["Metric", "Measured Value", "Threshold (0)", "Threshold (1)", "Threshold (2)", "Threshold (3)", "Threshold (4)"]
+            ["Metric", "Value", "Rating 0", "Rating 1", "Rating 2", "Rating 3", "Rating 4", "Rating 5"]
         )
         self.rating_table_widget.verticalHeader().setVisible(False)  # Hide row labels for cleanliness
 
         # Alternatively, set specific widths for cells
-        self.rating_table_widget.setColumnWidth(0, 250)  # Set width for "Metric" column
-        self.rating_table_widget.setColumnWidth(1, 120)  # Set width for "Measured Value" column
+        self.rating_table_widget.setColumnWidth(0, 175)  # Set width for "Metric" column
+        self.rating_table_widget.setColumnWidth(1, 100)  # Set width for "Measured Value" column
 
         main_layout.addWidget(self.rating_table_widget, stretch=13)
 
@@ -736,9 +758,10 @@ class MainWindow(QMainWindow):
 
         # Initialize rating table properly
         self.canvas.initialize_rating_table()
+        self.rating_table_widget.resizeColumnsToContents()
 
         self.show()
-        self.showFullScreen()
+        # self.showFullScreen()
 
         # Show instructions for perimeter drawing
         self.show_perimeter_prompt()
