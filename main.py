@@ -184,6 +184,7 @@ class Canvas(QWidget):
             self.table_widget.clearContents()
             self.table_widget.setRowCount(0)
         if self.rating_table_widget:
+            self.rating_table_widget.clearContents()
             self.initialize_rating_table()
 
     def generate_loop(self):
@@ -218,22 +219,17 @@ class Canvas(QWidget):
         """Ask the user to confirm the generated perimeter."""
         response = QMessageBox.question(self, "Confirm Perimeter?", "Do you want to confirm the perimeter?", QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
         if response == QMessageBox.StandardButton.Ok:
-            self.confirm_perimeter()
+            self.drawing_perimeter = False
+            self.perimeter_points = [] # clear the points from the screen
+            self.drawing_cracks = True
+            self.update_rating_table()
         else:
             # Cancel deletes the generated loop and allows the user to edit points again
             self.perimeter_spline = []
             self.drawing_perimeter = True
-            self.update()
+        self.update()     
 
-    def confirm_perimeter(self):
-        """Confirm the perimeter and switch to crack defining mode."""
-        self.drawing_perimeter = False
-        self.perimeter_points = [] # clear the points from the screen
-        self.drawing_cracks = True
-        self.update()
-        self.update_rating_table()
-
-    def snap_to_perimeter(self, point, threshold=15):
+    def snap_to_perimeter(self, point, threshold=5):
         """Snap the point to the nearest perimeter point if within threshold."""
         if len(self.perimeter_spline) < 3:
             return point  # No snapping if the perimeter is not defined
@@ -389,7 +385,7 @@ class Canvas(QWidget):
             "≥ 1 int. crack > 80% CSD",  # Rating 4, Metric 10
             "≥ 3 int. cracks > 50% CSD",  # Rating 4, Metric 11
             "splits present",  # Rating 5, Metric 12
-            "Overall Evaluation"  # Final result
+            "OVERALL RATING"  # Final result
         ]
 
         # Define thresholds for each metric across all ratings
@@ -471,11 +467,12 @@ class Canvas(QWidget):
         # Populate the metrics and thresholds in the table
         for row, metric in enumerate(metrics):
             self.rating_table_widget.setItem(row, 0, QTableWidgetItem(metric))  # Metric name
-            self.rating_table_widget.setRowHeight(row, 1)
             for col, threshold_key in enumerate(thresholds.keys(), start=2):
                 self.rating_table_widget.setItem(row, col, QTableWidgetItem(thresholds[threshold_key][row]))
 
-
+        # Make the rows stretch to fill the vertical space
+        vertical_header = self.rating_table_widget.verticalHeader()
+        vertical_header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
 
     def update_rating_table(self):
         """Update the rating evaluation table with the measured values for each metric."""
@@ -586,43 +583,6 @@ class Canvas(QWidget):
         ## Final Evaluation
         are_any_cracks_present = bool(crack_lengths)
 
-        ### DEBUG CODE ###
-        """ # Rating 5 Conditions
-        print("Rating 5 Conditions:")
-        print(f"are_any_splits_present: {are_any_splits_present}")
-
-        # Rating 0 Conditions
-        print("\nRating 0 Conditions:")
-        print(f"are_any_cracks_present: {are_any_cracks_present}")
-
-        # Rating 1 Conditions
-        print("\nRating 1 Conditions:")
-        print(f"are_all_cracks_below_25_percent: {are_all_cracks_below_25_percent}")
-        print(f"all_cracks_combined_below_CSD: {all_cracks_combined_below_CSD}")
-        print(f"are_all_external_cracks_below_10_percent: {are_all_external_cracks_below_10_percent}")
-
-        # Rating 2 Conditions
-        print("\nRating 2 Conditions:")
-        print(f"are_all_cracks_below_50_percent: {are_all_cracks_below_50_percent}")
-        print(f"all_cracks_combined_below_2xCSD: {all_cracks_combined_below_2xCSD}")
-        print(f"are_all_external_cracks_below_25_percent: {are_all_external_cracks_below_25_percent}")
-
-        # Rating 3 Conditions
-        print("\nRating 3 Conditions:")
-        print(f"are_there_two_or_less_internal_cracks_each_between_50_80: {are_there_two_or_less_internal_cracks_each_between_50_80}")
-        print(f"are_all_cracks_combined_below_3xCSD: {are_all_cracks_combined_below_3xCSD}")
-        print(f"are_all_external_cracks_below_50_percent: {are_all_external_cracks_below_50_percent}")
-
-        # Rating 4 Conditions
-        print("\nRating 4 Conditions:")
-        print(f"not_are_all_cracks_combined_below_3xCSD: {not are_all_cracks_combined_below_3xCSD}")
-        print(f"are_there_one_or_more_internal_cracks_each_above_80_percent: {are_there_one_or_more_internal_cracks_each_above_80_percent}")
-        print(f"are_there_three_or_more_internal_cracks_each_above_50_percent: {are_there_three_or_more_internal_cracks_each_above_50_percent}")
-        print(f"not_are_all_external_cracks_below_50_percent: {not are_all_external_cracks_below_50_percent}")
-        print()
-        print() """
-        ###
-
         # Step 1: Evaluate Rating 5 (Any split at all)
         if are_any_splits_present:
             assigned_rating = 5
@@ -662,31 +622,6 @@ class Canvas(QWidget):
         # Refresh the table
         self.rating_table_widget.viewport().update()
 
-    def count_cracks_below_threshold(self, threshold_percent):
-        """Count the number of cracks below a given length threshold percentage of CSD."""
-        if not self.perimeter_spline:
-            return 0
-
-        perimeter_length = sum(
-            math.hypot(self.perimeter_spline[i + 1].x() - self.perimeter_spline[i].x(),
-                       self.perimeter_spline[i + 1].y() - self.perimeter_spline[i].y())
-            for i in range(len(self.perimeter_spline) - 1)
-        )
-        perimeter_length += math.hypot(
-            self.perimeter_spline[-1].x() - self.perimeter_spline[0].x(),
-            self.perimeter_spline[-1].y() - self.perimeter_spline[0].y()
-        )
-        csd = perimeter_length / math.pi
-
-        count = 0
-        for crack, color in self.cracks:
-            crack_length = sum(math.hypot(crack[i + 1].x() - crack[i].x(), crack[i + 1].y() - crack[i].y()) for i in range(len(crack) - 1))
-            combined_length_all_cracks = (crack_length / csd) * 100 if csd > 0 else 0
-            if combined_length_all_cracks < threshold_percent:
-                count += 1
-
-        return count
-
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -706,7 +641,7 @@ class MainWindow(QMainWindow):
         # Add the canvas on the left
         self.canvas = Canvas(background_image="C:\\Users\\Stephen.Garden\\oRinGD\\test_2.jpg")
         self.canvas.setMinimumSize(600, 400)  # Set minimum size to ensure it's visible
-        top_layout.addWidget(self.canvas, stretch = 1)
+        top_layout.addWidget(self.canvas)
 
         # Crack details table widget (right of the canvas)
         self.crack_table_widget = QTableWidget()
@@ -722,7 +657,7 @@ class MainWindow(QMainWindow):
         header = self.crack_table_widget.horizontalHeader()
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
 
-        top_layout.addWidget(self.crack_table_widget, stretch=1)
+        top_layout.addWidget(self.crack_table_widget)
 
         # Add the top layout to the main layout
         main_layout.addLayout(top_layout, stretch=32)
@@ -739,10 +674,15 @@ class MainWindow(QMainWindow):
         self.rating_table_widget.setColumnWidth(0, 175)  # Set width for "Metric" column
         self.rating_table_widget.setColumnWidth(1, 100)  # Set width for "Measured Value" column
 
-        main_layout.addWidget(self.rating_table_widget, stretch=13)
+        main_layout.addWidget(self.rating_table_widget, stretch=17)
 
         # Bottom layout for buttons
         button_layout = QHBoxLayout()
+
+        # Restart / Clear Button
+        clearButton = QPushButton("Clear Canvas")
+        clearButton.clicked.connect(self.clear_session)
+        button_layout.addWidget(clearButton)
 
         # Close button
         closeButton = QPushButton("Close")
@@ -765,6 +705,17 @@ class MainWindow(QMainWindow):
 
         # Show instructions for perimeter drawing
         self.show_perimeter_prompt()
+
+    def clear_session(self):
+        """Clear the canvas and reset the session."""
+        response = QMessageBox.question(
+            self,
+            "Clear Session?",
+            "Are you sure you want to clear the session? All data will be lost.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if response == QMessageBox.StandardButton.Yes:
+            self.canvas.clearCanvas()  # Reset the canvas
 
     def show_perimeter_prompt(self):
         QMessageBox.information(
