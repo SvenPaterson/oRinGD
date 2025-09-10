@@ -1,0 +1,365 @@
+{
+  "test_suite": "ISO 23936-2 Annex B Rating System",
+  "version": "1.0",
+  "test_cases": [
+    {
+      "id": 1,
+      "name": "R0_No_Cracks",
+      "description": "No cracks present",
+      "cracks": [],
+      "expected_rating": 0,
+      "expected_result": "PASS",
+      "rationale": "No cracks = Rating 0 (intact seal)"
+    },
+    {
+      "id": 2,
+      "name": "R1_Small_Internal",
+      "description": "Single small internal crack",
+      "cracks": [
+        {
+          "type": "Internal",
+          "length_percent": 20
+        }
+      ],
+      "expected_rating": 1,
+      "expected_result": "PASS",
+      "rationale": "Total 20% < 100%, all cracks < 25%, no external cracks"
+    },
+    {
+      "id": 3,
+      "name": "R1_Multiple_Small",
+      "description": "Multiple small cracks with small external",
+      "cracks": [
+        {
+          "type": "Internal",
+          "length_percent": 24
+        },
+        {
+          "type": "Internal",
+          "length_percent": 24
+        },
+        {
+          "type": "External",
+          "length_percent": 9
+        }
+      ],
+      "expected_rating": 1,
+      "expected_result": "PASS",
+      "rationale": "Total 57% < 100%, all < 25%, external < 10%"
+    },
+    {
+      "id": 4,
+      "name": "R1_Edge_100_Percent",
+      "description": "Total exactly 100% CSD",
+      "cracks": [
+        {
+          "type": "Internal",
+          "length_percent": 24
+        },
+        {
+          "type": "Internal",
+          "length_percent": 24
+        },
+        {
+          "type": "Internal",
+          "length_percent": 24
+        },
+        {
+          "type": "Internal",
+          "length_percent": 24
+        },
+        {
+          "type": "External",
+          "length_percent": 4
+        }
+      ],
+      "expected_rating": 1,
+      "expected_result": "PASS",
+      "rationale": "Total exactly 100%, all < 25%, external < 10%"
+    },
+    {
+      "id": 5,
+      "name": "R2_Medium_Cracks",
+      "description": "Medium cracks under 50%",
+      "cracks": [
+        {
+          "type": "Internal",
+          "length_percent": 45
+        },
+        {
+          "type": "Internal",
+          "length_percent": 40
+        },
+        {
+          "type": "External",
+          "length_percent": 24
+        }
+      ],
+      "expected_rating": 2,
+      "expected_result": "PASS",
+      "rationale": "Total 109% < 200%, all < 50%, external < 25%"
+    },
+    {
+      "id": 6,
+      "name": "R2_Near_Limit",
+      "description": "Near 200% limit",
+      "cracks": [
+        {
+          "type": "Internal",
+          "length_percent": 49
+        },
+        {
+          "type": "Internal",
+          "length_percent": 49
+        },
+        {
+          "type": "Internal",
+          "length_percent": 49
+        },
+        {
+          "type": "Internal",
+          "length_percent": 49
+        }
+      ],
+      "expected_rating": 2,
+      "expected_result": "PASS",
+      "rationale": "Total 196% < 200%, all < 50%"
+    },
+    {
+      "id": 7,
+      "name": "R3_Two_Large_Internals",
+      "description": "Two internal cracks 50-80%",
+      "cracks": [
+        {
+          "type": "Internal",
+          "length_percent": 75
+        },
+        {
+          "type": "Internal",
+          "length_percent": 60
+        },
+        {
+          "type": "External",
+          "length_percent": 45
+        }
+      ],
+      "expected_rating": 3,
+      "expected_result": "PASS",
+      "rationale": "Total 180% < 300%, 2 internals 50-80%, external < 50%"
+    },
+    {
+      "id": 8,
+      "name": "R3_Edge_80_Percent",
+      "description": "Internal cracks at exactly 80%",
+      "cracks": [
+        {
+          "type": "Internal",
+          "length_percent": 80
+        },
+        {
+          "type": "Internal",
+          "length_percent": 80
+        }
+      ],
+      "expected_rating": 3,
+      "expected_result": "PASS",
+      "rationale": "Total 160% < 300%, 2 internals at 80% (within 50-80%)"
+    },
+    {
+      "id": 9,
+      "name": "R3_Mixed_Sizes",
+      "description": "Mixed crack sizes within Rating 3 limits",
+      "cracks": [
+        {
+          "type": "Internal",
+          "length_percent": 70
+        },
+        {
+          "type": "Internal",
+          "length_percent": 30
+        },
+        {
+          "type": "Internal",
+          "length_percent": 20
+        },
+        {
+          "type": "External",
+          "length_percent": 40
+        }
+      ],
+      "expected_rating": 3,
+      "expected_result": "PASS",
+      "rationale": "Total 160% < 300%, only 1 internal 50-80%, external < 50%"
+    },
+    {
+      "id": 10,
+      "name": "R4_Total_Above_300",
+      "description": "Total crack length > 300%",
+      "cracks": [
+        {
+          "type": "Internal",
+          "length_percent": 151
+        },
+        {
+          "type": "Internal",
+          "length_percent": 150
+        }
+      ],
+      "expected_rating": 4,
+      "expected_result": "FAIL",
+      "rationale": "Total 301% > 300% triggers Rating 4"
+    },
+    {
+      "id": 11,
+      "name": "R4_One_Above_80",
+      "description": "One internal crack > 80%",
+      "cracks": [
+        {
+          "type": "Internal",
+          "length_percent": 81
+        },
+        {
+          "type": "Internal",
+          "length_percent": 20
+        }
+      ],
+      "expected_rating": 4,
+      "expected_result": "FAIL",
+      "rationale": "At least 1 internal > 80% triggers Rating 4"
+    },
+    {
+      "id": 12,
+      "name": "R4_Three_Above_50",
+      "description": "Three internal cracks > 50%",
+      "cracks": [
+        {
+          "type": "Internal",
+          "length_percent": 51
+        },
+        {
+          "type": "Internal",
+          "length_percent": 52
+        },
+        {
+          "type": "Internal",
+          "length_percent": 53
+        }
+      ],
+      "expected_rating": 4,
+      "expected_result": "FAIL",
+      "rationale": "3 or more internals > 50% triggers Rating 4"
+    },
+    {
+      "id": 13,
+      "name": "R4_External_Above_50",
+      "description": "External crack > 50%",
+      "cracks": [
+        {
+          "type": "Internal",
+          "length_percent": 30
+        },
+        {
+          "type": "External",
+          "length_percent": 51
+        }
+      ],
+      "expected_rating": 4,
+      "expected_result": "FAIL",
+      "rationale": "Any external > 50% triggers Rating 4"
+    },
+    {
+      "id": 14,
+      "name": "R4_Three_Internals_50_80",
+      "description": "Three internal cracks in 50-80% range",
+      "cracks": [
+        {
+          "type": "Internal",
+          "length_percent": 75
+        },
+        {
+          "type": "Internal",
+          "length_percent": 60
+        },
+        {
+          "type": "Internal",
+          "length_percent": 55
+        }
+      ],
+      "expected_rating": 4,
+      "expected_result": "FAIL",
+      "rationale": "More than 2 internals 50-80% AND all 3 are > 50%"
+    },
+    {
+      "id": 15,
+      "name": "R5_Single_Split",
+      "description": "Single split crack",
+      "cracks": [
+        {
+          "type": "Split",
+          "length_percent": 10
+        }
+      ],
+      "expected_rating": 5,
+      "expected_result": "FAIL",
+      "rationale": "Any split = automatic Rating 5"
+    },
+    {
+      "id": 16,
+      "name": "R5_Split_Override",
+      "description": "Split overrides other good conditions",
+      "cracks": [
+        {
+          "type": "Internal",
+          "length_percent": 5
+        },
+        {
+          "type": "Split",
+          "length_percent": 5
+        }
+      ],
+      "expected_rating": 5,
+      "expected_result": "FAIL",
+      "rationale": "Split present overrides all other conditions"
+    },
+    {
+      "id": 17,
+      "name": "Edge_External_10_Percent",
+      "description": "External at exactly 10% (fails Rating 1)",
+      "cracks": [
+        {
+          "type": "Internal",
+          "length_percent": 20
+        },
+        {
+          "type": "External",
+          "length_percent": 10
+        }
+      ],
+      "expected_rating": 2,
+      "expected_result": "PASS",
+      "rationale": "External = 10% fails Rating 1 condition (must be < 10%)"
+    },
+    {
+      "id": 18,
+      "name": "Edge_Internal_50_Percent",
+      "description": "Exactly at 50% threshold",
+      "cracks": [
+        {
+          "type": "Internal",
+          "length_percent": 50
+        },
+        {
+          "type": "Internal",
+          "length_percent": 50
+        },
+        {
+          "type": "Internal",
+          "length_percent": 50
+        }
+      ],
+      "expected_rating": 4,
+      "expected_result": "FAIL",
+      "rationale": "3 internals at exactly 50% triggers Rating 4 (\u22653 > 50%)"
+    }
+  ]
+}
