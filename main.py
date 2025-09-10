@@ -1,8 +1,9 @@
+import os
 import sys
 import math
-import tempfile
 import datetime
-import os
+import tempfile
+from typing import List
 
 import numpy as np
 from scipy.interpolate import splprep, splev
@@ -21,254 +22,14 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QHeaderView,
     QFileDialog,
+    QTextEdit,
+    QDialog,
 )
 
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image
 
-import sys
-import json
-from typing import List, Dict, Tuple
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QMessageBox, QTextEdit, QDialog, QVBoxLayout, QPushButton
-
 from rating import compute_metrics, table_values, assign_iso23936_rating
-
-class ValidationHarness:
-    """
-    Add this class to your existing application file.
-    It wraps your Canvas class to enable testing.
-    """
-    
-    def __init__(self, canvas_instance):
-        """Initialize with your existing canvas instance"""
-        self.canvas = canvas_instance
-        self.test_results = []
-        
-    def run_single_test(self, test_case: Dict) -> Dict:
-        """
-        Run a single test case on your canvas implementation
-        
-        Args:
-            test_case: Dictionary with 'cracks' list and expected results
-        
-        Returns:
-            Dictionary with test results
-        """
-        # Clear existing cracks
-        original_cracks = self.canvas.cracks.copy()
-        self.canvas.cracks = []
-        
-        # Add test cracks to canvas
-        for crack_def in test_case['cracks']:
-            crack_type = crack_def['type']
-            length_percent = crack_def['length_percent']
-            
-            # Map type to Qt color (matching your implementation)
-            color_map = {
-                'Internal': Qt.GlobalColor.blue,
-                'External': Qt.GlobalColor.yellow,
-                'Split': Qt.GlobalColor.red
-            }
-            
-            # Create mock crack with appropriate length
-            # Assuming perimeter_spline exists and has been initialized
-            if self.canvas.perimeter_spline:
-                csd = self._calculate_csd()
-                crack_length_pixels = (length_percent / 100) * csd
-                
-                # Create a simple two-point crack for testing
-                mock_crack = [
-                    QPointF(100, 100),  # Start point
-                    QPointF(100 + crack_length_pixels, 100)  # End point
-                ]
-                
-                self.canvas.cracks.append((mock_crack, color_map[crack_type]))
-        
-        # Run your rating calculation
-        self.canvas.update_rating_table()
-        
-        # Extract the assigned rating from your table
-        actual_rating = self._extract_rating_from_table()
-        
-        # Compare with expected
-        result = {
-            'test_name': test_case.get('name', 'Unknown'),
-            'expected_rating': test_case['expected_rating'],
-            'actual_rating': actual_rating,
-            'passed': actual_rating == test_case['expected_rating'],
-            'cracks': test_case['cracks']
-        }
-        
-        # Restore original cracks
-        self.canvas.cracks = original_cracks
-        self.canvas.update_rating_table()
-        
-        return result
-    
-    def _calculate_csd(self) -> float:
-        """Calculate CSD from perimeter spline"""
-        if not self.canvas.perimeter_spline:
-            return 100  # Default value for testing
-            
-        perimeter_length = sum(
-            math.hypot(
-                self.canvas.perimeter_spline[i + 1].x() - self.canvas.perimeter_spline[i].x(),
-                self.canvas.perimeter_spline[i + 1].y() - self.canvas.perimeter_spline[i].y()
-            )
-            for i in range(len(self.canvas.perimeter_spline) - 1)
-        )
-        perimeter_length += math.hypot(
-            self.canvas.perimeter_spline[-1].x() - self.canvas.perimeter_spline[0].x(),
-            self.canvas.perimeter_spline[-1].y() - self.canvas.perimeter_spline[0].y()
-        )
-        return perimeter_length / math.pi
-    
-    def _extract_rating_from_table(self) -> int:
-        """Extract the current rating from your rating table"""
-        if not self.canvas.rating_table_widget:
-            return -1
-            
-        # Find the overall rating row
-        overall_row = 10  # Based on your implementation
-        rating_cell = self.canvas.rating_table_widget.item(overall_row, 1)
-        
-        if rating_cell:
-            text = rating_cell.text()
-            # Parse "Rating: X - Pass/Fail" format
-            if "Rating:" in text:
-                rating_str = text.split("Rating:")[1].split("-")[0].strip()
-                try:
-                    return int(rating_str)
-                except ValueError:
-                    return -1
-        return -1
-    
-    def run_all_tests(self) -> List[Dict]:
-        """Run all ISO 23936-2 test cases"""
-        # Load test cases
-        test_cases = self.load_test_cases()
-        results = []
-        
-        for test_case in test_cases:
-            result = self.run_single_test(test_case)
-            results.append(result)
-            
-        self.test_results = results
-        return results
-    
-    def load_test_cases(self) -> List[Dict]:
-        """Load the standard ISO 23936-2 test cases"""
-        return [
-            {
-                'name': 'R0_No_Cracks',
-                'cracks': [],
-                'expected_rating': 0,
-                'expected_result': 'PASS'
-            },
-            {
-                'name': 'R1_Small_Internal',
-                'cracks': [{'type': 'Internal', 'length_percent': 20}],
-                'expected_rating': 1,
-                'expected_result': 'PASS'
-            },
-            {
-                'name': 'R1_Multiple_Small',
-                'cracks': [
-                    {'type': 'Internal', 'length_percent': 24},
-                    {'type': 'Internal', 'length_percent': 24},
-                    {'type': 'External', 'length_percent': 9}
-                ],
-                'expected_rating': 1,
-                'expected_result': 'PASS'
-            },
-            {
-                'name': 'R2_Medium_Cracks',
-                'cracks': [
-                    {'type': 'Internal', 'length_percent': 45},
-                    {'type': 'Internal', 'length_percent': 40},
-                    {'type': 'External', 'length_percent': 24}
-                ],
-                'expected_rating': 2,
-                'expected_result': 'PASS'
-            },
-            {
-                'name': 'R3_Two_Large_Internals',
-                'cracks': [
-                    {'type': 'Internal', 'length_percent': 75},
-                    {'type': 'Internal', 'length_percent': 60},
-                    {'type': 'External', 'length_percent': 45}
-                ],
-                'expected_rating': 3,
-                'expected_result': 'PASS'
-            },
-            {
-                'name': 'R4_Total_Above_300',
-                'cracks': [
-                    {'type': 'Internal', 'length_percent': 151},
-                    {'type': 'Internal', 'length_percent': 150}
-                ],
-                'expected_rating': 4,
-                'expected_result': 'FAIL'
-            },
-            {
-                'name': 'R4_Three_Above_50',
-                'cracks': [
-                    {'type': 'Internal', 'length_percent': 51},
-                    {'type': 'Internal', 'length_percent': 52},
-                    {'type': 'Internal', 'length_percent': 53}
-                ],
-                'expected_rating': 4,
-                'expected_result': 'FAIL'
-            },
-            {
-                'name': 'R5_Single_Split',
-                'cracks': [{'type': 'Split', 'length_percent': 10}],
-                'expected_rating': 5,
-                'expected_result': 'FAIL'
-            },
-            {
-                'name': 'R5_Split_Override',
-                'cracks': [
-                    {'type': 'Internal', 'length_percent': 5},
-                    {'type': 'Split', 'length_percent': 5}
-                ],
-                'expected_rating': 5,
-                'expected_result': 'FAIL'
-            }
-        ]
-    
-    def generate_report(self) -> str:
-        """Generate a detailed test report"""
-        if not self.test_results:
-            return "No test results available. Run tests first."
-        
-        report = []
-        report.append("=" * 60)
-        report.append("ISO 23936-2 VALIDATION REPORT")
-        report.append("=" * 60)
-        report.append("")
-        
-        passed = sum(1 for r in self.test_results if r['passed'])
-        failed = len(self.test_results) - passed
-        
-        report.append(f"Total Tests: {len(self.test_results)}")
-        report.append(f"Passed: {passed}")
-        report.append(f"Failed: {failed}")
-        report.append(f"Success Rate: {(passed/len(self.test_results)*100):.1f}%")
-        report.append("")
-        
-        if failed > 0:
-            report.append("FAILED TESTS:")
-            report.append("-" * 40)
-            for result in self.test_results:
-                if not result['passed']:
-                    report.append(f"\nTest: {result['test_name']}")
-                    report.append(f"  Expected Rating: {result['expected_rating']}")
-                    report.append(f"  Your Rating: {result['actual_rating']}")
-                    report.append(f"  Cracks: {result['cracks']}")
-        
-        return "\n".join(report)
 
 class Canvas(QWidget):
     def __init__(self, background_image=None, table_widget=None, rating_table_widget=None):
@@ -761,7 +522,7 @@ class Canvas(QWidget):
                 threshold_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)  # Center-align threshold content
                 self.rating_table_widget.setItem(row, col, threshold_item)
     
-    def update_rating_table(self):
+    def update_rating_table_old(self):
         if not self.rating_table_widget:
             return
 
@@ -781,7 +542,6 @@ class Canvas(QWidget):
 
         # ---- Build engine inputs (percent of CSD per crack) ----
         engine_cracks = []  # [("Internal"/"External"/"Split", percent)]
-
 
         for crack, color in self.cracks:
             crack_len_px = sum(
@@ -839,6 +599,88 @@ class Canvas(QWidget):
 
         self.rating_table_widget.viewport().update()
    
+    def update_rating_table(self) -> None:
+        """Recompute crack metrics and update the rating table UI."""
+        if not self.rating_table_widget:
+            return
+
+        # --- CSD from perimeter ---
+        if self.perimeter_spline:
+            perimeter_length = sum(
+                math.hypot(
+                    self.perimeter_spline[i + 1].x() - self.perimeter_spline[i].x(),
+                    self.perimeter_spline[i + 1].y() - self.perimeter_spline[i].y(),
+                )
+                for i in range(len(self.perimeter_spline) - 1)
+            )
+            perimeter_length += math.hypot(
+                self.perimeter_spline[-1].x() - self.perimeter_spline[0].x(),
+                self.perimeter_spline[-1].y() - self.perimeter_spline[0].y(),
+            )
+        else:
+            perimeter_length = 0.0
+
+        csd = (perimeter_length / math.pi) if perimeter_length > 0 else 1.0
+
+        # --- Map drawn cracks -> engine inputs (percent of CSD) ---
+        engine_cracks = []  # List[Tuple["Internal"|"External"|"Split", float]]
+        for crack, color in self.cracks:
+            crack_len_px = sum(
+                math.hypot(crack[i + 1].x() - crack[i].x(), crack[i + 1].y() - crack[i].y())
+                for i in range(len(crack) - 1)
+            )
+            pct = (crack_len_px / csd) * 100.0 if csd > 0 else 0.0
+
+            if color == Qt.GlobalColor.blue:
+                engine_cracks.append(("Internal", pct))
+            elif color == Qt.GlobalColor.yellow:
+                engine_cracks.append(("External", pct))
+            elif color == Qt.GlobalColor.red:
+                engine_cracks.append(("Split", pct))
+            # Ignore any other colors
+
+        # --- Delegate to rating engine ---
+        m = compute_metrics(engine_cracks)                 # metrics object
+        assigned_rating = assign_iso23936_rating(engine_cracks)
+        values = table_values(m)                           # 10 strings in your row order
+
+        # --- Update "Value" column (row 0..9) ---
+        for row, text in enumerate(values):
+            item = QTableWidgetItem(text)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.rating_table_widget.setItem(row, 1, item)
+
+        # --- Highlight rating column (2..6 correspond to Rating 1..5) ---
+        for col in range(2, 7):  # 2..6 inclusive
+            for row in range(10):  # first 10 rows are metrics
+                cell = self.rating_table_widget.item(row, col)
+                if not cell:
+                    continue
+                if col == assigned_rating + 1:
+                    cell.setBackground(Qt.GlobalColor.yellow)
+                    cell.setForeground(Qt.GlobalColor.black)
+                else:
+                    cell.setData(Qt.ItemDataRole.BackgroundRole, None)
+                    cell.setData(Qt.ItemDataRole.ForegroundRole, None)
+
+        # --- Overall result row (row 10, col 1) ---
+        overall_row = 10
+        overall_eval = "Pass" if assigned_rating <= 3 else "Fail"
+        overall_text = f"Rating: {assigned_rating} - {overall_eval}"
+
+        overall_item = QTableWidgetItem(overall_text)
+        overall_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.rating_table_widget.setItem(overall_row, 1, overall_item)
+
+        if overall_eval == "Pass":
+            overall_item.setBackground(Qt.GlobalColor.green)
+            overall_item.setForeground(Qt.GlobalColor.black)
+        else:
+            overall_item.setBackground(Qt.GlobalColor.red)
+            overall_item.setForeground(Qt.GlobalColor.white)
+
+        self.rating_table_widget.viewport().update()
+
     def show_crack_prompt(self):
         QMessageBox.information(
             self,
@@ -853,7 +695,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         window_size = [850, 900]
         super().__init__()
-        self.setWindowTitle("oRinGD - ISO23939-2 Annex B Analyzer")
+        self.setWindowTitle("oRinGD - ISO23936-2 Annex B Analyzer")
         self.resize(window_size[0], window_size[1])  # Set initial size to ensure better fit for canvas and tables
         self.setFixedSize(window_size[0], window_size[1])
 
@@ -867,7 +709,7 @@ class MainWindow(QMainWindow):
         top_layout = QHBoxLayout()
 
         # Add the canvas on the left
-        self.canvas = Canvas() # background_image="C:\\Users\\Stephen.Garden\\oRinGD\\test_2.jpg"
+        self.canvas = Canvas()
         self.canvas.setMinimumSize(600, 400)  # Set minimum size to ensure it's visible
         top_layout.addWidget(self.canvas)
 
@@ -894,7 +736,7 @@ class MainWindow(QMainWindow):
         self.rating_table_widget = QTableWidget()
         self.rating_table_widget.setColumnCount(7)
         self.rating_table_widget.setHorizontalHeaderLabels(
-            ["Metric", "Value", "Rating 0", "Rating 1", "Rating 2", "Rating 3", "Rating 4", "Rating 5"]
+            ["Metric", "Value", "Rating 1", "Rating 2", "Rating 3", "Rating 4", "Rating 5"]
         )
         self.rating_table_widget.verticalHeader().setVisible(False)  # Hide row labels for cleanliness
 
@@ -1060,20 +902,6 @@ class MainWindow(QMainWindow):
             # Clean up the temporary image file
             os.remove(temp_image_path)
     
-    def add_validation_menu(self):
-        """
-        Add this method to your MainWindow __init__ to create a validation menu
-        Call this after creating the canvas
-        """
-        # Add to your button layout
-        validationButton = QPushButton("Run Validation Tests")
-        validationButton.clicked.connect(self.run_validation_tests)
-        # Add to your button_layout
-        
-        debugButton = QPushButton("Debug Current Rating")
-        debugButton.clicked.connect(self.debug_current_rating)
-        # Add to your button_layout
-
     def debug_current_rating(self):
         """Debug the current rating assignment"""
         if not self.canvas.perimeter_spline:
@@ -1102,10 +930,9 @@ class MainWindow(QMainWindow):
         dialog.setLayout(layout)
         dialog.exec()
 
-    def get_rating_debug_info(self):
-        """
-        Enhanced debug information about current rating with ALL relevant conditions
-        """
+    def get_rating_debug_info(self) -> str:
+        """Return a human-readable breakdown of the current rating decision."""
+
         info = []
         info.append("CURRENT RATING DEBUG INFORMATION")
         info.append("=" * 40)
