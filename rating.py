@@ -23,7 +23,7 @@ class Metrics:
     internal_above_50: int
     has_three_internal_above_50: bool
 
-def compute_metrics(cracks: List[Crack]) -> Metrics:
+def compute_metrics(cracks: List[Crack], debug: bool = False) -> Metrics:
     if not cracks:
         return Metrics(
             num_cracks=0, total_pct=0.0,
@@ -51,6 +51,16 @@ def compute_metrics(cracks: List[Crack]) -> Metrics:
     internal_above_80 = sum(1 for p in internal if p > 80)
     internal_above_50 = sum(1 for p in internal if p > 50)
     has_three_internal_above_50 = internal_above_50 >= 3
+
+    if debug:
+        print(f"\nMETRICS DEBUG:")
+        print(f"Total: {total:.2f}%")
+        print(f"Internal cracks: {len(internal)}")
+        print(f"External cracks: {len(external)}")
+        print(f"Has split: {has_split}")
+        print(f"Internal 50-80%: {internal_50_80_count}")
+        print(f"Internal >80%: {internal_above_80}")
+        print(f"Internal >50%: {internal_above_50}")
 
     return Metrics(
         num_cracks=len(cracks),

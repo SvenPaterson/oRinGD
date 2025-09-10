@@ -292,39 +292,6 @@ class Canvas(QWidget):
         self.table_widget = table_widget  # Reference to the crack details table widget
         self.rating_table_widget = rating_table_widget  # Reference to the rating table widget
 
-    def debug_rating_calculation(self, total_length, internal_lengths, external_lengths, has_split):
-        """
-        Add this right before the rating assignment in update_rating_table
-        to see exactly why a rating is chosen
-        """
-        print("\n" + "="*50)
-        print("RATING CALCULATION DEBUG")
-        print("="*50)
-        
-        all_lengths = internal_lengths + external_lengths
-        
-        print(f"Total length: {total_length:.2f}%")
-        print(f"Has split: {has_split}")
-        print(f"Number of cracks: {len(all_lengths)}")
-        
-        if all_lengths:
-            print(f"All cracks <25%: {all(l < 25 for l in all_lengths)}")
-            print(f"All cracks <50%: {all(l < 50 for l in all_lengths)}")
-            print(f"Cracks ≥25%: {[f'{l:.1f}%' for l in all_lengths if l >= 25]}")
-            print(f"Cracks ≥50%: {[f'{l:.1f}%' for l in all_lengths if l >= 50]}")
-        
-        if external_lengths:
-            print(f"External <10%: {all(l < 10 for l in external_lengths)}")
-            print(f"External <25%: {all(l < 25 for l in external_lengths)}")
-            print(f"External <50%: {all(l < 50 for l in external_lengths)}")
-        
-        if internal_lengths:
-            print(f"Internal 50-80%: {sum(1 for l in internal_lengths if 50 <= l <= 80)}")
-            print(f"Internal >80%: {sum(1 for l in internal_lengths if l > 80)}")
-            print(f"Internal >50%: {sum(1 for l in internal_lengths if l > 50)}")
-        
-        print("="*50)
-
     def resizeEvent(self, event):
         """Rescale the background image when the canvas is resized."""
         if self.background:
@@ -798,7 +765,7 @@ class Canvas(QWidget):
         if not self.rating_table_widget:
             return
 
-        # ---- CSD (same as before) ----
+        # ---- CSD ----
         perimeter_length = sum(
             math.hypot(self.perimeter_spline[i + 1].x() - self.perimeter_spline[i].x(),
                     self.perimeter_spline[i + 1].y() - self.perimeter_spline[i].y())
@@ -813,10 +780,8 @@ class Canvas(QWidget):
         csd = perimeter_length / math.pi if perimeter_length > 0 else 1.0
 
         # ---- Build engine inputs (percent of CSD per crack) ----
-        engine_cracks = []              # [("Internal"/"External"/"Split", percent)]
-        internal_pct = []
-        external_pct = []
-        has_split = False
+        engine_cracks = []  # [("Internal"/"External"/"Split", percent)]
+
 
         for crack, color in self.cracks:
             crack_len_px = sum(
@@ -827,20 +792,14 @@ class Canvas(QWidget):
 
             if color == Qt.GlobalColor.blue:
                 engine_cracks.append(("Internal", pct))
-                internal_pct.append(pct)
             elif color == Qt.GlobalColor.yellow:
                 engine_cracks.append(("External", pct))
-                external_pct.append(pct)
             elif color == Qt.GlobalColor.red:
                 engine_cracks.append(("Split", pct))
-                has_split = True
             # ignore other colors
 
-        # Combined % just for your existing debug print
-        combined_pct = sum(internal_pct) + sum(external_pct)
-
         # ---- Delegate ALL metrics & rating to rating.py ----
-        m = compute_metrics(engine_cracks)
+        m = compute_metrics(engine_cracks, debug = True)
         assigned_rating = assign_iso23936_rating(engine_cracks)
         values = table_values(m)  # list of 10 strings in your row order
 
@@ -849,10 +808,6 @@ class Canvas(QWidget):
             item = QTableWidgetItem(text)
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.rating_table_widget.setItem(row, 1, item)
-
-        # ---- Your existing debug helper (kept intact) ----
-        self.debug_rating_calculation(combined_pct, internal_pct, external_pct, has_split)
-        print(f"DEBUG: assigned_rating = {assigned_rating}")
 
         # ---- Highlight the corresponding rating column (keep your mapping/look) ----
         # columns: 0=Metric, 1=Value, 2=R1, 3=R2, 4=R3, 5=R4, 6=R5
@@ -883,38 +838,7 @@ class Canvas(QWidget):
             overall_item.setForeground(Qt.GlobalColor.white)
 
         self.rating_table_widget.viewport().update()
-
-    def get_rating_explanation(self, assigned_rating, metrics):
-        """
-        Helper method to explain why a specific rating was assigned.
-        Useful for debugging and validation.
-        """
-        explanations = {
-            0: "No cracks detected - intact seal",
-            1: "All cracks < 25% CSD, total ≤ 100% CSD, external cracks < 10% CSD",
-            2: "All cracks < 50% CSD, total ≤ 200% CSD, external cracks < 25% CSD",
-            3: "≤2 internal cracks 50-80% CSD, total ≤ 300% CSD, external cracks < 50% CSD",
-            4: "Total > 300% CSD OR ≥1 internal > 80% CSD OR ≥3 internals > 50% CSD OR external > 50% CSD",
-            5: "Split crack detected - automatic failure"
-        }
-        
-        details = []
-        if assigned_rating == 4:
-            # Provide specific reason for Rating 4
-            if metrics['total_length'] > 300:
-                details.append(f"Total crack length {metrics['total_length']:.1f}% > 300%")
-            if metrics['internal_above_80'] >= 1:
-                details.append(f"{metrics['internal_above_80']} internal crack(s) > 80%")
-            if metrics['internal_above_50'] >= 3:
-                details.append(f"{metrics['internal_above_50']} internal cracks > 50% (≥3)")
-            if metrics['any_external_above_50']:
-                details.append("External crack(s) > 50%")
-        
-        base_explanation = explanations.get(assigned_rating, "Unknown rating")
-        if details:
-            return f"{base_explanation}\nSpecific failures: {', '.join(details)}"
-        return base_explanation
-    
+   
     def show_crack_prompt(self):
         QMessageBox.information(
             self,
@@ -999,11 +923,7 @@ class MainWindow(QMainWindow):
         closeButton.clicked.connect(self.close)
         button_layout.addWidget(closeButton)
 
-        # Add validation buttons
-        validationButton = QPushButton("Run Validation Tests")
-        validationButton.clicked.connect(self.run_validation_tests)
-        button_layout.addWidget(validationButton)
-        
+        # Add debug evaluation buttons
         debugButton = QPushButton("Debug Current Rating")
         debugButton.clicked.connect(self.debug_current_rating)
         button_layout.addWidget(debugButton)
@@ -1153,38 +1073,6 @@ class MainWindow(QMainWindow):
         debugButton = QPushButton("Debug Current Rating")
         debugButton.clicked.connect(self.debug_current_rating)
         # Add to your button_layout
-
-    def run_validation_tests(self):
-        """Run the full validation suite"""
-        # Ensure perimeter is defined
-        if not self.canvas.perimeter_spline:
-            QMessageBox.warning(self, "No Perimeter", 
-                            "Please define a perimeter first by clicking points and pressing middle mouse button.")
-            return
-        
-        # Create harness and run tests
-        harness = ValidationHarness(self.canvas)
-        results = harness.run_all_tests()
-        report = harness.generate_report()
-        
-        # Show results in a dialog
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Validation Test Results")
-        dialog.setMinimumSize(600, 400)
-        
-        layout = QVBoxLayout()
-        
-        text_edit = QTextEdit()
-        text_edit.setPlainText(report)
-        text_edit.setReadOnly(True)
-        layout.addWidget(text_edit)
-        
-        close_button = QPushButton("Close")
-        close_button.clicked.connect(dialog.close)
-        layout.addWidget(close_button)
-        
-        dialog.setLayout(layout)
-        dialog.exec()
 
     def debug_current_rating(self):
         """Debug the current rating assignment"""
