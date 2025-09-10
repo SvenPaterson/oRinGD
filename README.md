@@ -8,6 +8,8 @@
 
 oRinGD (O-Ring Gas Decompression) is a specialized image analysis tool for evaluating O-ring seal damage according to ISO 23936-2 Annex B standards. The application allows users to trace and quantify cracks in O-ring cross-sections, automatically calculating damage ratings for rapid gas decompression (RGD) testing.
 
+Built with the help of AI because I just don't have time to git gud and write this from scratch myself.
+
 ## Features
 
 - **Interactive crack tracing** on O-ring cross-section images
