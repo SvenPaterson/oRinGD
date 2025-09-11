@@ -18,12 +18,14 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QMessageBox,
     QTableWidget,
+    QTabWidget,
     QTableWidgetItem,
     QPushButton,
     QHeaderView,
     QFileDialog,
     QTextEdit,
     QDialog,
+    QLabel,
 )
 
 from openpyxl import Workbook
@@ -31,16 +33,20 @@ from openpyxl.drawing.image import Image
 
 from rating import compute_metrics, table_values, assign_iso23936_rating
 
+from canvas_gv import CanvasScene, CanvasView, GVTestPane
+
 class Canvas(QWidget):
     def __init__(self, background_image=None, table_widget=None, rating_table_widget=None):
         super().__init__()
-        self.background_img = background_image
-        self.background = QPixmap(background_image) if background_image else None
-        if self.background and not self.background.isNull():
-            print("Image loaded successfully.")
+        if background_image:
+            self.background = QPixmap(background_image)
+            if not self.background.isNull():
+                print("Image loaded successfully.")
+            else:
+                print("Failed to load image. Check the path.")
         else:
-            print("Failed to load image. Check the path.")
-            self.background = None
+            self.background = None  # don't print anything yet
+
         self.scaled_background = None
         self.perimeter_points = []  # Points for perimeter
         self.perimeter_spline = []  # Smoothed spline points for perimeter
@@ -125,7 +131,7 @@ class Canvas(QWidget):
             j = i
 
         return odd_nodes
-    
+
     def mousePressEvent(self, event: QMouseEvent):
         point = QPointF(event.pos())
         
@@ -204,7 +210,7 @@ class Canvas(QWidget):
             self.update_rating_table()
             self.current_crack = []  # Reset for the next crack
             self.update()
-    
+
     def loadImage(self, file_path):
         """Load a new image into the canvas."""
         self.clearCanvas()
@@ -212,7 +218,7 @@ class Canvas(QWidget):
         self.background = QPixmap(file_path)
         self.scaled_background = None  # Force rescaling
         self.update()
-    
+
     def clearCanvas(self):
         """Clear everything: perimeter and cracks."""
         self.perimeter_points = []
@@ -370,7 +376,7 @@ class Canvas(QWidget):
                         self.update_rating_table()
 
                     return
-                
+
     def update_crack_table(self):
         """Update the crack details table, used when a crack is deleted."""
         if not self.table_widget:
@@ -521,7 +527,7 @@ class Canvas(QWidget):
                 threshold_item = QTableWidgetItem(thresholds[threshold_key][row])
                 threshold_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)  # Center-align threshold content
                 self.rating_table_widget.setItem(row, col, threshold_item)
-    
+
     def update_rating_table_old(self):
         if not self.rating_table_widget:
             return
@@ -598,7 +604,7 @@ class Canvas(QWidget):
             overall_item.setForeground(Qt.GlobalColor.white)
 
         self.rating_table_widget.viewport().update()
-   
+
     def update_rating_table(self) -> None:
         """Recompute crack metrics and update the rating table UI."""
         if not self.rating_table_widget:
@@ -690,100 +696,96 @@ class Canvas(QWidget):
             "You may use the right-mouse button to delete any number of drawn cracks from the analysis.\n\n"
             "You can click the 'Clear Session' button to re-start the analysis.\n"
         )
-    
+
 class MainWindow(QMainWindow):
     def __init__(self):
         window_size = [850, 900]
         super().__init__()
         self.setWindowTitle("oRinGD - ISO23936-2 Annex B Analyzer")
-        self.resize(window_size[0], window_size[1])  # Set initial size to ensure better fit for canvas and tables
+        self.resize(window_size[0], window_size[1])
         self.setFixedSize(window_size[0], window_size[1])
 
-        centralWidget = QWidget()
-        self.setCentralWidget(centralWidget)
+        # --- Build tabs up-front ---
+        self.tabs = QTabWidget()
+        self.setCentralWidget(self.tabs)
 
-        # Create the main layout
-        main_layout = QVBoxLayout(centralWidget)
+        # ========== Legacy Tab ==========
+        legacy_tab = QWidget()
+        legacy_layout = QVBoxLayout(legacy_tab)
 
         # Top layout: Canvas and Crack Table Side by Side
         top_layout = QHBoxLayout()
 
-        # Add the canvas on the left
+        # Legacy Canvas (old widget)
         self.canvas = Canvas()
-        self.canvas.setMinimumSize(600, 400)  # Set minimum size to ensure it's visible
+        self.canvas.setMinimumSize(600, 400)
         top_layout.addWidget(self.canvas)
 
         # Crack details table widget (right of the canvas)
         self.crack_table_widget = QTableWidget()
         self.crack_table_widget.setColumnCount(3)
         self.crack_table_widget.setHorizontalHeaderLabels(["Crack #", "Type", "Length, % of CSD"])
-        self.crack_table_widget.verticalHeader().setVisible(False)  # Hide row numbers for cleanliness
+        self.crack_table_widget.verticalHeader().setVisible(False)
 
         # Set specific column widths for the first two columns
-        self.crack_table_widget.setColumnWidth(0, 50)  # Fixed width for column 0
-        self.crack_table_widget.setColumnWidth(1, 75)   # Fixed width for column 1
+        self.crack_table_widget.setColumnWidth(0, 50)
+        self.crack_table_widget.setColumnWidth(1, 75)
 
         # Set the third column to stretch and fill the remaining space
         header = self.crack_table_widget.horizontalHeader()
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
 
         top_layout.addWidget(self.crack_table_widget)
+        legacy_layout.addLayout(top_layout, stretch=32)
 
-        # Add the top layout to the main layout
-        main_layout.addLayout(top_layout, stretch=32)
-
-        # Bottom layout: Rating Evaluation Table
+        # Rating Evaluation Table (bottom, legacy)
         self.rating_table_widget = QTableWidget()
         self.rating_table_widget.setColumnCount(7)
         self.rating_table_widget.setHorizontalHeaderLabels(
             ["Metric", "Value", "Rating 1", "Rating 2", "Rating 3", "Rating 4", "Rating 5"]
         )
-        self.rating_table_widget.verticalHeader().setVisible(False)  # Hide row labels for cleanliness
+        self.rating_table_widget.verticalHeader().setVisible(False)
+        legacy_layout.addWidget(self.rating_table_widget, stretch=17)
 
-        main_layout.addWidget(self.rating_table_widget, stretch=17)
-
-        # Bottom layout for buttons
+        # Buttons (legacy)
         button_layout = QHBoxLayout()
 
-        # Image Selection Button
         imageButton = QPushButton("Select Image")
         imageButton.clicked.connect(self.select_image)
         button_layout.addWidget(imageButton)
 
-        # Restart / Clear Button
         clearButton = QPushButton("Clear Session")
         clearButton.clicked.connect(self.clear_session)
         button_layout.addWidget(clearButton)
 
-        # Save Analysis Button
         saveReportButton = QPushButton("Save Report")
         saveReportButton.clicked.connect(self.saveAsExcel)
         button_layout.addWidget(saveReportButton)
 
-        # Close button
         closeButton = QPushButton("Close")
         closeButton.clicked.connect(self.close)
         button_layout.addWidget(closeButton)
 
-        # Add debug evaluation buttons
         debugButton = QPushButton("Debug Current Rating")
         debugButton.clicked.connect(self.debug_current_rating)
         button_layout.addWidget(debugButton)
 
-        # Add button layout to the main vertical layout
-        main_layout.addLayout(button_layout)
+        legacy_layout.addLayout(button_layout)
 
-        # Assign crack details and rating evaluation table to canvas for updates
+        # Wire legacy tables into legacy canvas
         self.canvas.table_widget = self.crack_table_widget
         self.canvas.rating_table_widget = self.rating_table_widget
-
-        # Initialize rating table properly
         self.canvas.initialize_rating_table()
-        
-        self.show()
-        # self.showFullScreen()
 
-        # Show instructions for perimeter drawing
+        # Add legacy tab
+        self.tabs.addTab(legacy_tab, "Legacy Canvas")
+
+        # New zoomable test canvas
+        self.gv_tab = GVTestPane()
+        self.tabs.addTab(self.gv_tab, "New Zoomable Canvas")
+
+        # Show and prompt (legacy)
+        self.show()
         self.show_perimeter_prompt()
 
     def clear_session(self):
@@ -808,10 +810,13 @@ class MainWindow(QMainWindow):
         )
 
     def select_image(self):
-        """Open a file dialog to select an image and load it into the canvas."""
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select O-Ring Image", "", "Images (*.png *.jpg *.jpeg *.bmp)")
-        if file_path:
-            self.canvas.loadImage(file_path)
+        fname, _ = QFileDialog.getOpenFileName(self, "Select Image",
+                                            "", "Images (*.png *.jpg *.jpeg *.bmp)")
+        if fname:
+            # Legacy canvas
+            self.canvas.load_background(fname)
+            # New zoomable canvas
+            self.gv_tab.view.load_image(fname)
 
     def saveCanvas(self, file_path=0, suppress_conf=False):
         if not file_path:
@@ -901,7 +906,7 @@ class MainWindow(QMainWindow):
 
             # Clean up the temporary image file
             os.remove(temp_image_path)
-    
+
     def debug_current_rating(self):
         """Debug the current rating assignment"""
         if not self.canvas.perimeter_spline:
