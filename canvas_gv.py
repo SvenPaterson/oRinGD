@@ -7,7 +7,7 @@ from scipy.interpolate import splprep, splev
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict
 
-from PyQt6.QtCore import Qt, QPointF, QRectF, QPoint
+from PyQt6.QtCore import Qt, QPointF, QRectF, QPoint, pyqtSignal
 from PyQt6.QtGui import QPainter, QPen, QPainterPath, QPixmap, QTransform, QAction
 from PyQt6.QtWidgets import (
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsPathItem,
@@ -152,6 +152,10 @@ class CanvasView(QGraphicsView):
       - 'draw_perimeter': LMB adds red-cross control points; MMB to spline/confirm; RMB delete/clear
       - 'draw_crack': LMB drag to draw; RMB delete near point
     """
+    perimeterUpdated = pyqtSignal()
+    cracksUpdated = pyqtSignal()
+    modeChanged = pyqtSignal(str)
+
     def __init__(self, scene: CanvasScene):
         super().__init__(scene)
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -192,6 +196,12 @@ class CanvasView(QGraphicsView):
         self._csd_px: float = 1.0  # avoid div-by-zero; recompute on perimeter changes
         self._item_to_crack: Dict[QGraphicsPathItem, CrackData] = {}
 
+    def _apply_mode(self, mode: str, force_emit: bool = False):
+        if self._mode == mode and not force_emit:
+            return
+        self._mode = mode
+        self.modeChanged.emit(mode)
+
     # ---------- Public API ----------
     def load_image(self, path: str) -> bool:
         pm = QPixmap(path)
@@ -214,7 +224,7 @@ class CanvasView(QGraphicsView):
         self._current_crack_img.clear()
         self._has_valid_inside_point = False
         self._clear_crack_preview()
-        self._mode = mode
+        self._apply_mode(mode)
 
     def clear_overlays(self):
         scene: CanvasScene = self.scene()  # type: ignore
@@ -234,6 +244,10 @@ class CanvasView(QGraphicsView):
         scene.crack_items.clear()
         self._cracks.clear()
         self._item_to_crack.clear()
+
+        self._apply_mode('draw_perimeter', force_emit=True)
+        self.perimeterUpdated.emit()
+        self.cracksUpdated.emit()
 
     def get_perimeter_data(self) -> PerimeterData:
         return self._perimeter or PerimeterData([], [])
@@ -266,6 +280,7 @@ class CanvasView(QGraphicsView):
 
         # update types when epsilon changes
         self._reclassify_all_cracks()
+        self.cracksUpdated.emit()
 
 
     # ---------- Perimeter UI ----------
@@ -378,6 +393,7 @@ class CanvasView(QGraphicsView):
 
         # with no perimeter all cracks are considered internal
         self._reclassify_all_cracks()
+        self.perimeterUpdated.emit()
 
     # ---------- zoom-floor helpers ----------
     
@@ -427,6 +443,7 @@ class CanvasView(QGraphicsView):
             per_len += math.hypot(x2-x1, y2-y1)
         per_len += math.hypot(spline_img[0][0]-spline_img[-1][0], spline_img[0][1]-spline_img[-1][1])
         self._csd_px = (per_len / math.pi) if per_len > 0 else 1.0
+        self.perimeterUpdated.emit()
     
     def _ensure_crack_preview(self):
         if self._crack_preview_item is None:
@@ -523,6 +540,7 @@ class CanvasView(QGraphicsView):
                             self._cracks.remove(c)
                         except ValueError:
                             pass
+                    self.cracksUpdated.emit()
                     return True
         return False
 
@@ -626,7 +644,7 @@ class CanvasView(QGraphicsView):
                 if self._perim_ctrl_item:
                     scene.removeItem(self._perim_ctrl_item); self._perim_ctrl_item = None
                 self._perim_ctrl_img.clear()
-                self._mode = 'draw_crack'
+                self._apply_mode('draw_crack')
             return
 
         # Left:
@@ -734,6 +752,7 @@ class CanvasView(QGraphicsView):
                                     crack_type=ctype, epsilon_used=eps)
                     self._cracks.append(cdata)
                     self._item_to_crack[crack_item] = cdata
+                    self.cracksUpdated.emit()
 
 
             # cleanup preview + transient
