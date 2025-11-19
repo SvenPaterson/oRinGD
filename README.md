@@ -17,6 +17,8 @@ Built with the help of AI because I just don't have time to git gud and write th
 - **ISO 23936-2 compliant** rating system (0-5 scale)
 - **Real-time damage assessment** with pass/fail determination
 - **Detailed metrics tracking** for quality control
+- **Session summary tracking** with per-image finalize workflow
+- **Tabbed workspace** separating live analysis metrics from the session log
 - **Excel report generation** with annotated images
 - **Comprehensive debug tools** for rating verification
 
@@ -61,7 +63,7 @@ python main.py
 
 ### Workflow
 
-1. **Load Image**: Click "Select Image" to load an O-ring cross-section image
+1. **Load Image**: Click "Load / Next Image" to load an O-ring cross-section image
 2. **Define Perimeter**: 
    - Left-click to add points around the O-ring perimeter
    - Middle-click to generate the perimeter spline
@@ -75,7 +77,16 @@ python main.py
    - Rating is calculated automatically per ISO 23936-2
    - Table shows individual crack metrics
    - Overall pass/fail determination displayed
-5. **Export Report**: Click "Save Report" to generate Excel documentation
+5. **Review Metrics vs. Session Log**:
+   - Use the bottom tabs to switch between **Current Analysis** (all rating metrics, no scrolling needed) and **Session Summary** (scrollable, compact table)
+   - The session table keeps a running list of every O-ring analyzed in the current run (handy for 50+ sections)
+6. **Finalize & Start Next**:
+   - Click **Finalize Analysis** to lock in the current rating and add it to the session summary table
+   - Use **Load / Next Image** to immediately begin the next analysis
+7. **Manage Past Results**:
+   - Highlight a row in the session table and click **Edit Selected** to reload that image and redo the measurements
+   - Click **Delete Selected** to remove an entry that you no longer need in the session log
+8. **Export Report**: Click **Save Report** before finalizing if you need a canvas + metrics snapshot for the active image
 
 ### Crack Classification
 

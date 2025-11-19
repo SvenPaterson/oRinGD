@@ -2,7 +2,9 @@ import os
 import sys
 import datetime
 import tempfile
-from typing import Optional
+import json
+from dataclasses import dataclass
+from typing import List, Optional
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -19,6 +21,10 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QTextEdit,
     QDialog,
+    QLabel,
+    QAbstractItemView,
+    QTabWidget,
+    QSizePolicy,
 )
 
 from openpyxl import Workbook
@@ -29,16 +35,29 @@ from rating import compute_metrics, table_values, assign_iso23936_rating
 from canvas_gv import CanvasScene, CanvasView
 
 
+@dataclass
+class SessionAnalysis:
+    index: int
+    image_name: str
+    image_path: str
+    completed_at: datetime.datetime
+    crack_count: int
+    total_pct: float
+    rating: int
+    result: str
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
-        window_size = [850, 900]
+        window_size = [1200, 900]
         super().__init__()
         self.setWindowTitle("oRinGD - ISO23936-2 Annex B Analyzer")
         self.resize(window_size[0], window_size[1])
-        self.setFixedSize(window_size[0], window_size[1])
+        self.setMinimumSize(1000, 720)
 
         self.current_image_path: Optional[str] = None
         self._has_shown_crack_prompt = False
+        self.session_records: List[SessionAnalysis] = []
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -49,8 +68,8 @@ class MainWindow(QMainWindow):
 
         self.scene = CanvasScene()
         self.view = CanvasView(self.scene)
-        self.view.setMinimumSize(600, 400)
-        content_layout.addWidget(self.view, stretch=32)
+        self.view.setMinimumSize(700, 500)
+        content_layout.addWidget(self.view, stretch=5)
 
         self.crack_table_widget = QTableWidget()
         self.crack_table_widget.setColumnCount(3)
@@ -60,21 +79,65 @@ class MainWindow(QMainWindow):
         self.crack_table_widget.setColumnWidth(1, 75)
         crack_header = self.crack_table_widget.horizontalHeader()
         crack_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        content_layout.addWidget(self.crack_table_widget, stretch=17)
+        content_layout.addWidget(self.crack_table_widget, stretch=2)
+
+        tabs = QTabWidget()
+        tabs.setDocumentMode(True)
+        root_layout.addWidget(tabs, stretch=10)
+
+        rating_tab = QWidget()
+        rating_layout = QVBoxLayout(rating_tab)
+        rating_layout.setContentsMargins(0, 0, 0, 0)
 
         self.rating_table_widget = QTableWidget()
         self.rating_table_widget.setColumnCount(7)
         self.rating_table_widget.setHorizontalHeaderLabels(
             ["Metric", "Value", "Rating 1", "Rating 2", "Rating 3", "Rating 4", "Rating 5"]
         )
-        self.rating_table_widget.verticalHeader().setVisible(False)
-        root_layout.addWidget(self.rating_table_widget, stretch=17)
+        rating_vheader = self.rating_table_widget.verticalHeader()
+        rating_vheader.setVisible(False)
+        self.rating_table_widget.setMinimumHeight(320)
+        self.rating_table_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        rating_vheader.setDefaultSectionSize(26)
+        rating_vheader.setMinimumSectionSize(24)
+        rating_layout.addWidget(self.rating_table_widget)
+        tabs.addTab(rating_tab, "Current Analysis")
+
+        session_tab = QWidget()
+        session_layout = QVBoxLayout(session_tab)
+        session_layout.setContentsMargins(0, 0, 0, 0)
+
+        session_label = QLabel("Session Summary")
+        session_label.setStyleSheet("font-weight: bold;")
+        session_layout.addWidget(session_label)
+
+        self.session_table_widget = QTableWidget()
+        self.session_table_widget.setMinimumHeight(160)
+        self.session_table_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        session_vheader = self.session_table_widget.verticalHeader()
+        session_vheader.setDefaultSectionSize(24)
+        session_vheader.setMinimumSectionSize(20)
+        session_layout.addWidget(self.session_table_widget, stretch=1)
+
+        session_actions_layout = QHBoxLayout()
+        self.edit_session_button = QPushButton("Edit Selected")
+        self.edit_session_button.clicked.connect(self.edit_selected_analysis)
+        session_actions_layout.addWidget(self.edit_session_button)
+
+        self.delete_session_button = QPushButton("Delete Selected")
+        self.delete_session_button.clicked.connect(self.delete_selected_analysis)
+        session_actions_layout.addWidget(self.delete_session_button)
+        session_actions_layout.addStretch(1)
+        session_layout.addLayout(session_actions_layout)
+
+        tabs.addTab(session_tab, "Session Summary")
+        self.tab_widget = tabs
 
         button_layout = QHBoxLayout()
 
-        image_button = QPushButton("Select Image")
-        image_button.clicked.connect(self.select_image)
-        button_layout.addWidget(image_button)
+        self.image_button = QPushButton("Load / Next Image")
+        self.image_button.clicked.connect(self.select_image)
+        button_layout.addWidget(self.image_button)
 
         perim_mode_button = QPushButton("Perimeter Mode")
         perim_mode_button.clicked.connect(lambda: self.view.set_mode('draw_perimeter'))
@@ -84,13 +147,17 @@ class MainWindow(QMainWindow):
         crack_mode_button.clicked.connect(lambda: self.view.set_mode('draw_crack'))
         button_layout.addWidget(crack_mode_button)
 
-        clear_button = QPushButton("Clear Session")
-        clear_button.clicked.connect(self.clear_session)
+        self.finalize_button = QPushButton("Finalize Analysis")
+        self.finalize_button.clicked.connect(self.finalize_current_analysis)
+        button_layout.addWidget(self.finalize_button)
+
+        clear_button = QPushButton("Clear Active Analysis")
+        clear_button.clicked.connect(self.clear_active_analysis)
         button_layout.addWidget(clear_button)
 
-        save_report_button = QPushButton("Save Report")
-        save_report_button.clicked.connect(self.saveAsExcel)
-        button_layout.addWidget(save_report_button)
+        self.save_report_button = QPushButton("Save Report")
+        self.save_report_button.clicked.connect(self.saveAsExcel)
+        button_layout.addWidget(self.save_report_button)
 
         debug_button = QPushButton("Debug Current Rating")
         debug_button.clicked.connect(self.debug_current_rating)
@@ -103,13 +170,20 @@ class MainWindow(QMainWindow):
         root_layout.addLayout(button_layout)
 
         self.initialize_rating_table()
+        self.initialize_session_table()
         self.refresh_tables()
 
         self.view.perimeterUpdated.connect(self.refresh_tables)
         self.view.cracksUpdated.connect(self.refresh_tables)
+        self.view.perimeterUpdated.connect(self.update_action_states)
+        self.view.cracksUpdated.connect(self.update_action_states)
+        selection_model = self.session_table_widget.selectionModel()
+        if selection_model:
+            selection_model.selectionChanged.connect(lambda *_: self.update_action_states())
         self.view.modeChanged.connect(self.on_mode_changed)
 
         self.show()
+        self.update_action_states()
         self.show_perimeter_prompt()
 
     def on_mode_changed(self, mode: str):
@@ -122,6 +196,161 @@ class MainWindow(QMainWindow):
     def refresh_tables(self):
         self.update_crack_table()
         self.update_rating_table()
+        self.update_action_states()
+
+    def initialize_session_table(self):
+        headers = ["#", "Image", "Completed", "Cracks", "Total % CSD", "Rating", "Result"]
+        self.session_table_widget.setColumnCount(len(headers))
+        self.session_table_widget.setHorizontalHeaderLabels(headers)
+        self.session_table_widget.verticalHeader().setVisible(False)
+        header = self.session_table_widget.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        self.session_table_widget.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.session_table_widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.session_table_widget.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.session_table_widget.setAlternatingRowColors(True)
+        self.refresh_session_table()
+
+    def refresh_session_table(self):
+        self.session_table_widget.setRowCount(len(self.session_records))
+        for row, record in enumerate(self.session_records):
+            values = [
+                str(record.index),
+                record.image_name,
+                record.completed_at.strftime("%Y-%m-%d %H:%M:%S"),
+                str(record.crack_count),
+                f"{record.total_pct:.2f}%",
+                str(record.rating),
+                record.result,
+            ]
+            for col, text in enumerate(values):
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if col == 1:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                self.session_table_widget.setItem(row, col, item)
+
+            result_item = self.session_table_widget.item(row, 6)
+            if result_item:
+                if record.result == "Pass":
+                    result_item.setBackground(Qt.GlobalColor.green)
+                    result_item.setForeground(Qt.GlobalColor.black)
+                else:
+                    result_item.setBackground(Qt.GlobalColor.red)
+                    result_item.setForeground(Qt.GlobalColor.white)
+
+        self.session_table_widget.resizeRowsToContents()
+
+    def get_selected_session_row(self) -> Optional[int]:
+        selection_model = self.session_table_widget.selectionModel()
+        if not selection_model:
+            return None
+        rows = selection_model.selectedRows()
+        if not rows:
+            return None
+        return rows[0].row()
+
+    def delete_selected_analysis(self):
+        row = self.get_selected_session_row()
+        if row is None:
+            QMessageBox.information(self, "Select Analysis", "Choose a session entry to delete.")
+            return
+        record = self.session_records[row]
+        response = QMessageBox.question(
+            self,
+            "Delete Analysis?",
+            f"Remove the recorded analysis for {record.image_name}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if response != QMessageBox.StandardButton.Yes:
+            return
+        self.session_records.pop(row)
+        self.reindex_session_records()
+        self.refresh_session_table()
+        self.session_table_widget.clearSelection()
+        self.update_action_states()
+
+    def edit_selected_analysis(self):
+        row = self.get_selected_session_row()
+        if row is None:
+            QMessageBox.information(self, "Select Analysis", "Choose a session entry to edit.")
+            return
+        record = self.session_records[row]
+
+        if self.has_active_analysis_data():
+            response = QMessageBox.question(
+                self,
+                "Replace Current Analysis?",
+                "Current, unfinalized work will be discarded. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if response != QMessageBox.StandardButton.Yes:
+                return
+
+        if not os.path.exists(record.image_path):
+            QMessageBox.warning(
+                self,
+                "Image Missing",
+                f"Cannot find {record.image_path}. The session entry will be removed.",
+            )
+            self.session_records.pop(row)
+            self.reindex_session_records()
+            self.refresh_session_table()
+            self.update_action_states()
+            return
+
+        if not self.view.load_image(record.image_path):
+            QMessageBox.warning(self, "Load Failed", "Unable to load the selected image for editing.")
+            return
+
+        self.session_records.pop(row)
+        self.reindex_session_records()
+        self.refresh_session_table()
+        self.session_table_widget.clearSelection()
+
+        self.current_image_path = record.image_path
+        self.view.set_mode('draw_perimeter')
+        self._has_shown_crack_prompt = False
+        self.refresh_tables()
+        self.show_perimeter_prompt()
+        QMessageBox.information(
+            self,
+            "Edit Mode",
+            f"Recreate the perimeter and cracks for {record.image_name}, then finalize again when ready.",
+        )
+        self.update_action_states()
+
+    def reindex_session_records(self):
+        for idx, record in enumerate(self.session_records, start=1):
+            record.index = idx
+
+    def has_active_analysis_data(self) -> bool:
+        perimeter = self.view.get_perimeter_data()
+        _, cracks = self.view.engine_inputs()
+        if len(perimeter.spline_points) >= 3 or len(perimeter.control_points) >= 3:
+            return True
+        return len(cracks) > 0
+
+    def can_finalize_analysis(self) -> bool:
+        if not self.current_image_path:
+            return False
+        perimeter = self.view.get_perimeter_data()
+        return len(perimeter.spline_points) >= 3
+
+    def update_action_states(self):
+        if hasattr(self, "finalize_button"):
+            self.finalize_button.setEnabled(self.can_finalize_analysis())
+        if hasattr(self, "save_report_button"):
+            self.save_report_button.setEnabled(self.current_image_path is not None)
+        selection_model = self.session_table_widget.selectionModel() if hasattr(self, "session_table_widget") else None
+        has_selection = bool(selection_model and selection_model.hasSelection())
+        if hasattr(self, "edit_session_button"):
+            self.edit_session_button.setEnabled(has_selection)
+        if hasattr(self, "delete_session_button"):
+            self.delete_session_button.setEnabled(has_selection)
 
     def update_crack_table(self):
         _, cracks = self.view.engine_inputs()
@@ -284,9 +513,19 @@ class MainWindow(QMainWindow):
         self.rating_table_widget.viewport().update()
 
     def select_image(self):
+        if self.current_image_path and self.has_active_analysis_data():
+            response = QMessageBox.question(
+                self,
+                "Replace Current Analysis?",
+                "Loading another image will discard the in-progress analysis. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if response != QMessageBox.StandardButton.Yes:
+                return
+
         fname, _ = QFileDialog.getOpenFileName(
             self,
-            "Select Image",
+            "Load Image",
             "",
             "Images (*.png *.jpg *.jpeg *.bmp)",
         )
@@ -299,12 +538,55 @@ class MainWindow(QMainWindow):
         self.view.set_mode('draw_perimeter')
         self._has_shown_crack_prompt = False
         self.show_perimeter_prompt()
+        self.update_action_states()
 
-    def clear_session(self):
+    def finalize_current_analysis(self):
+        if not self.current_image_path:
+            QMessageBox.warning(self, "No Image", "Load an image before finalizing an analysis.")
+            return
+
+        perimeter = self.view.get_perimeter_data()
+        if len(perimeter.spline_points) < 3:
+            QMessageBox.warning(self, "Incomplete Perimeter", "Define and confirm the perimeter before finalizing.")
+            return
+
+        _, cracks = self.view.engine_inputs()
+        metrics = compute_metrics(cracks)
+        rating = assign_iso23936_rating(cracks)
+        result = "Pass" if rating <= 3 else "Fail"
+
+        record = SessionAnalysis(
+            index=len(self.session_records) + 1,
+            image_name=os.path.basename(self.current_image_path),
+            image_path=self.current_image_path,
+            completed_at=datetime.datetime.now(),
+            crack_count=metrics.num_cracks,
+            total_pct=metrics.total_pct,
+            rating=rating,
+            result=result,
+        )
+
+        self.session_records.append(record)
+        self.refresh_session_table()
+        self.session_table_widget.scrollToBottom()
+
+        QMessageBox.information(
+            self,
+            "Analysis Finalized",
+            f"{record.image_name} recorded with Rating {rating} ({result}).\n"
+            "Use 'Load / Next Image' to start the next o-ring.",
+        )
+
+        self.view.clear_overlays()
+        self.current_image_path = None
+        self.refresh_tables()
+        self.update_action_states()
+
+    def clear_active_analysis(self):
         response = QMessageBox.question(
             self,
-            "Clear Session?",
-            "Are you sure you want to clear the session? All data will be lost.",
+            "Clear Active Analysis?",
+            "Remove current perimeter and crack traces? Finalized analyses remain in the session table.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if response == QMessageBox.StandardButton.Yes:
@@ -312,6 +594,7 @@ class MainWindow(QMainWindow):
             self.view.set_mode('draw_perimeter')
             self._has_shown_crack_prompt = False
             self.refresh_tables()
+            self.update_action_states()
 
     def saveCanvas(self, file_path: Optional[str] = None, suppress_conf: bool = False):
         if not file_path:
