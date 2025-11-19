@@ -523,26 +523,34 @@ class CanvasView(QGraphicsView):
             p.lineTo(CoordinateManager.image_to_scene(ipt, scene.image_item))
         return p
 
-    def _delete_crack_near_scene_point(self, scene_pt: QPointF, tol_scene_px: float = 8.0) -> bool:
+    def _delete_crack_near_scene_point(self, scene_pt: QPointF, tol_scene_px: float = 14.0) -> bool:
         scene: CanvasScene = self.scene()  # type: ignore
-        if scene.image_item is None: return False
+        if scene.image_item is None:
+            return False
+
+        best_item: Optional[QGraphicsPathItem] = None
+        best_dist = tol_scene_px
         for item in list(scene.crack_items):
             path = item.path()
-            for i in range(path.elementCount()):
-                e = path.elementAt(i)
-                if QPointF(e.x, e.y).toPoint() == scene_pt.toPoint() or \
-                   (QPointF(e.x, e.y) - scene_pt).manhattanLength() <= tol_scene_px:
-                    scene.removeItem(item)
-                    scene.crack_items.remove(item)
-                    c = self._item_to_crack.pop(item, None)
-                    if c:
-                        try:
-                            self._cracks.remove(c)
-                        except ValueError:
-                            pass
-                    self.cracksUpdated.emit()
-                    return True
-        return False
+            pts = [QPointF(path.elementAt(i).x, path.elementAt(i).y) for i in range(path.elementCount())]
+            dist = self._scene_dist_to_polyline(scene_pt, pts)
+            if dist <= best_dist:
+                best_dist = dist
+                best_item = item
+
+        if not best_item:
+            return False
+
+        scene.removeItem(best_item)
+        scene.crack_items.remove(best_item)
+        crack = self._item_to_crack.pop(best_item, None)
+        if crack:
+            try:
+                self._cracks.remove(crack)
+            except ValueError:
+                pass
+        self.cracksUpdated.emit()
+        return True
 
     def _pan_by_pixels(self, dx: float, dy: float):
         p1 = self.mapToScene(self.viewport().rect().center())
@@ -574,6 +582,30 @@ class CanvasView(QGraphicsView):
                 d = math.hypot(x-px, y-py)
             best = min(best, d)
         return best
+
+    def _scene_dist_to_polyline(self, pt: QPointF, poly: List[QPointF]) -> float:
+        if len(poly) < 2:
+            return float("inf")
+        best = float("inf")
+        for a, b in zip(poly, poly[1:]):
+            d = self._scene_dist_to_segment(pt, a, b)
+            if d < best:
+                best = d
+        return best
+
+    @staticmethod
+    def _scene_dist_to_segment(p: QPointF, a: QPointF, b: QPointF) -> float:
+        ax, ay = a.x(), a.y()
+        bx, by = b.x(), b.y()
+        px, py = p.x(), p.y()
+        vx, vy = bx - ax, by - ay
+        seg_len2 = vx * vx + vy * vy
+        if seg_len2 <= 1e-6:
+            return math.hypot(px - ax, py - ay)
+        t = max(0.0, min(1.0, ((px - ax) * vx + (py - ay) * vy) / seg_len2))
+        proj_x = ax + t * vx
+        proj_y = ay + t * vy
+        return math.hypot(px - proj_x, py - proj_y)
 
     def _endpoint_on_perimeter(self, p: Tuple[float,float], eps_px: float = 3.0) -> bool:
         if not self._perimeter or len(self._perimeter.spline_points) < 3:

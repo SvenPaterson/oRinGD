@@ -3,6 +3,7 @@ import sys
 import datetime
 import tempfile
 import json
+import argparse
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -25,6 +26,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QTabWidget,
     QSizePolicy,
+    QSplitter,
 )
 
 from openpyxl import Workbook
@@ -33,6 +35,13 @@ from openpyxl.drawing.image import Image
 from rating import compute_metrics, table_values, assign_iso23936_rating
 
 from canvas_gv import CanvasScene, CanvasView
+
+
+DEFAULT_LAYOUT = {
+    "window": {"size": [1000, 1070]},
+    "top_splitter": [745, 230],
+    "main_splitter": [665, 350],
+}
 
 
 @dataclass
@@ -48,8 +57,8 @@ class SessionAnalysis:
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
-        window_size = [1200, 900]
+    def __init__(self, debug_layout: bool = False):
+        window_size = DEFAULT_LAYOUT["window"]["size"]
         super().__init__()
         self.setWindowTitle("oRinGD - ISO23936-2 Annex B Analyzer")
         self.resize(window_size[0], window_size[1])
@@ -58,32 +67,38 @@ class MainWindow(QMainWindow):
         self.current_image_path: Optional[str] = None
         self._has_shown_crack_prompt = False
         self.session_records: List[SessionAnalysis] = []
+        self.debug_layout = debug_layout
+        self.settings_path = os.path.join(os.path.dirname(__file__), "layout_prefs.json")
 
         central = QWidget()
         self.setCentralWidget(central)
         root_layout = QVBoxLayout(central)
 
-        content_layout = QHBoxLayout()
-        root_layout.addLayout(content_layout, stretch=32)
-
         self.scene = CanvasScene()
         self.view = CanvasView(self.scene)
         self.view.setMinimumSize(700, 500)
-        content_layout.addWidget(self.view, stretch=5)
 
         self.crack_table_widget = QTableWidget()
         self.crack_table_widget.setColumnCount(3)
         self.crack_table_widget.setHorizontalHeaderLabels(["Crack #", "Type", "Length, % of CSD"])
-        self.crack_table_widget.verticalHeader().setVisible(False)
+        crack_vheader = self.crack_table_widget.verticalHeader()
+        if crack_vheader:
+            crack_vheader.setVisible(False)
         self.crack_table_widget.setColumnWidth(0, 50)
         self.crack_table_widget.setColumnWidth(1, 75)
         crack_header = self.crack_table_widget.horizontalHeader()
-        crack_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        content_layout.addWidget(self.crack_table_widget, stretch=2)
+        if crack_header:
+            crack_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.crack_table_widget.setMinimumWidth(220)
+
+        self.top_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.top_splitter.addWidget(self.view)
+        self.top_splitter.addWidget(self.crack_table_widget)
+        self.top_splitter.setStretchFactor(0, 5)
+        self.top_splitter.setStretchFactor(1, 2)
 
         tabs = QTabWidget()
         tabs.setDocumentMode(True)
-        root_layout.addWidget(tabs, stretch=10)
 
         rating_tab = QWidget()
         rating_layout = QVBoxLayout(rating_tab)
@@ -95,11 +110,13 @@ class MainWindow(QMainWindow):
             ["Metric", "Value", "Rating 1", "Rating 2", "Rating 3", "Rating 4", "Rating 5"]
         )
         rating_vheader = self.rating_table_widget.verticalHeader()
-        rating_vheader.setVisible(False)
+        if rating_vheader:
+            rating_vheader.setVisible(False)
         self.rating_table_widget.setMinimumHeight(320)
         self.rating_table_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        rating_vheader.setDefaultSectionSize(26)
-        rating_vheader.setMinimumSectionSize(24)
+        if rating_vheader:
+            rating_vheader.setDefaultSectionSize(26)
+            rating_vheader.setMinimumSectionSize(24)
         rating_layout.addWidget(self.rating_table_widget)
         tabs.addTab(rating_tab, "Current Analysis")
 
@@ -115,8 +132,9 @@ class MainWindow(QMainWindow):
         self.session_table_widget.setMinimumHeight(160)
         self.session_table_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         session_vheader = self.session_table_widget.verticalHeader()
-        session_vheader.setDefaultSectionSize(24)
-        session_vheader.setMinimumSectionSize(20)
+        if session_vheader:
+            session_vheader.setDefaultSectionSize(24)
+            session_vheader.setMinimumSectionSize(20)
         session_layout.addWidget(self.session_table_widget, stretch=1)
 
         session_actions_layout = QHBoxLayout()
@@ -132,6 +150,15 @@ class MainWindow(QMainWindow):
 
         tabs.addTab(session_tab, "Session Summary")
         self.tab_widget = tabs
+
+        self.main_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.main_splitter.addWidget(self.top_splitter)
+        self.main_splitter.addWidget(tabs)
+        self.main_splitter.setStretchFactor(0, 5)
+        self.main_splitter.setStretchFactor(1, 2)
+        root_layout.addWidget(self.main_splitter, stretch=1)
+
+        self.apply_layout_defaults()
 
         button_layout = QHBoxLayout()
 
@@ -177,10 +204,14 @@ class MainWindow(QMainWindow):
         self.view.cracksUpdated.connect(self.refresh_tables)
         self.view.perimeterUpdated.connect(self.update_action_states)
         self.view.cracksUpdated.connect(self.update_action_states)
+        self.view.modeChanged.connect(self.on_mode_changed)
+
+        if self.debug_layout:
+            self.restore_layout_preferences()
+
         selection_model = self.session_table_widget.selectionModel()
         if selection_model:
             selection_model.selectionChanged.connect(lambda *_: self.update_action_states())
-        self.view.modeChanged.connect(self.on_mode_changed)
 
         self.show()
         self.update_action_states()
@@ -202,12 +233,15 @@ class MainWindow(QMainWindow):
         headers = ["#", "Image", "Completed", "Cracks", "Total % CSD", "Rating", "Result"]
         self.session_table_widget.setColumnCount(len(headers))
         self.session_table_widget.setHorizontalHeaderLabels(headers)
-        self.session_table_widget.verticalHeader().setVisible(False)
+        sess_vheader = self.session_table_widget.verticalHeader()
+        if sess_vheader:
+            sess_vheader.setVisible(False)
         header = self.session_table_widget.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        if header:
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+            header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
         self.session_table_widget.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.session_table_widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.session_table_widget.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -326,6 +360,66 @@ class MainWindow(QMainWindow):
     def reindex_session_records(self):
         for idx, record in enumerate(self.session_records, start=1):
             record.index = idx
+
+    def layout_preferences_payload(self) -> dict:
+        return {
+            "window": {
+                "size": [self.width(), self.height()],
+            },
+            "top_splitter": self.top_splitter.sizes() if hasattr(self, "top_splitter") else [],
+            "main_splitter": self.main_splitter.sizes() if hasattr(self, "main_splitter") else [],
+        }
+
+    def save_layout_preferences(self) -> None:
+        if not self.debug_layout:
+            return
+        try:
+            with open(self.settings_path, "w", encoding="utf-8") as fp:
+                json.dump(self.layout_preferences_payload(), fp, indent=2)
+        except OSError:
+            pass
+
+    def restore_layout_preferences(self) -> None:
+        if not self.debug_layout:
+            return
+        if not os.path.exists(self.settings_path):
+            return
+        try:
+            with open(self.settings_path, "r", encoding="utf-8") as fp:
+                data = json.load(fp)
+        except (OSError, json.JSONDecodeError):
+            return
+
+        window = data.get("window", {})
+        size = window.get("size")
+        if isinstance(size, list) and len(size) == 2:
+            try:
+                self.resize(int(size[0]), int(size[1]))
+            except (TypeError, ValueError):
+                pass
+
+        top_sizes = data.get("top_splitter")
+        if isinstance(top_sizes, list) and hasattr(self, "top_splitter"):
+            self.top_splitter.setSizes([int(s) for s in top_sizes if isinstance(s, (int, float))])
+
+        main_sizes = data.get("main_splitter")
+        if isinstance(main_sizes, list) and hasattr(self, "main_splitter"):
+            self.main_splitter.setSizes([int(s) for s in main_sizes if isinstance(s, (int, float))])
+
+    def closeEvent(self, event):
+        self.save_layout_preferences()
+        super().closeEvent(event)
+
+    def apply_layout_defaults(self):
+        size = DEFAULT_LAYOUT.get("window", {}).get("size")
+        if isinstance(size, list) and len(size) == 2:
+            self.resize(int(size[0]), int(size[1]))
+        top_sizes = DEFAULT_LAYOUT.get("top_splitter")
+        if isinstance(top_sizes, list) and hasattr(self, "top_splitter"):
+            self.top_splitter.setSizes(top_sizes)
+        main_sizes = DEFAULT_LAYOUT.get("main_splitter")
+        if isinstance(main_sizes, list) and hasattr(self, "main_splitter"):
+            self.main_splitter.setSizes(main_sizes)
 
     def has_active_analysis_data(self) -> bool:
         perimeter = self.view.get_perimeter_data()
@@ -455,10 +549,12 @@ class MainWindow(QMainWindow):
         self.rating_table_widget.setHorizontalHeaderLabels(["Metric", "Value"] + list(thresholds.keys()))
 
         vertical_header = self.rating_table_widget.verticalHeader()
-        vertical_header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        if vertical_header:
+            vertical_header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.rating_table_widget.resizeColumnsToContents()
         header = self.rating_table_widget.horizontalHeader()
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        if header:
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.rating_table_widget.setColumnWidth(0, 275)
 
         for row, metric in enumerate(metrics):
@@ -510,7 +606,9 @@ class MainWindow(QMainWindow):
             overall_item.setBackground(Qt.GlobalColor.red)
             overall_item.setForeground(Qt.GlobalColor.white)
 
-        self.rating_table_widget.viewport().update()
+        viewport = self.rating_table_widget.viewport()
+        if viewport:
+            viewport.update()
 
     def select_image(self):
         if self.current_image_path and self.has_active_analysis_data():
@@ -829,9 +927,17 @@ class MainWindow(QMainWindow):
         )
 
 
-def main():
+def main(argv: Optional[list[str]] = None):
+    parser = argparse.ArgumentParser(description="oRinGD - ISO23936-2 Annex B Analyzer")
+    parser.add_argument(
+        "--debug-layout",
+        action="store_true",
+        help="Enable saving/loading layout_prefs.json for splitter/window sizing",
+    )
+    args = parser.parse_args(argv)
+
     app = QApplication(sys.argv)
-    window = MainWindow()
+    window = MainWindow(debug_layout=args.debug_layout)
     sys.exit(app.exec())
 
 

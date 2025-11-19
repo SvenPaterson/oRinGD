@@ -19,6 +19,7 @@ Built with the help of AI because I just don't have time to git gud and write th
 - **Detailed metrics tracking** for quality control
 - **Session summary tracking** with per-image finalize workflow
 - **Tabbed workspace** separating live analysis metrics from the session log
+- **Resizable workspace** with splitter drag bars whose proportions persist to `layout_prefs.json`
 - **Excel report generation** with annotated images
 - **Comprehensive debug tools** for rating verification
 
@@ -59,6 +60,9 @@ pip install -r requirements.txt
 
 ```bash
 python main.py
+
+# Optional: enable layout debugging to persist splitter/window sizes
+python main.py --debug-layout
 ```
 
 ### Workflow
@@ -77,9 +81,10 @@ python main.py
    - Rating is calculated automatically per ISO 23936-2
    - Table shows individual crack metrics
    - Overall pass/fail determination displayed
-5. **Review Metrics vs. Session Log**:
-   - Use the bottom tabs to switch between **Current Analysis** (all rating metrics, no scrolling needed) and **Session Summary** (scrollable, compact table)
-   - The session table keeps a running list of every O-ring analyzed in the current run (handy for 50+ sections)
+5. **Review & Resize Layout**:
+   - Drag the splitter bars between the canvas, crack table, and bottom tab area to fit your workflow
+   - The app remembers your proportions in `layout_prefs.json` (same folder as `main.py`) so you can share exact numbers for new defaults
+   - Switch between **Current Analysis** (all rating metrics) and **Session Summary** tabs as needed
 6. **Finalize & Start Next**:
    - Click **Finalize Analysis** to lock in the current rating and add it to the session summary table
    - Use **Load / Next Image** to immediately begin the next analysis
