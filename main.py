@@ -2,7 +2,10 @@ import os
 import sys
 import datetime
 import tempfile
-from typing import Optional
+import json
+import argparse
+from dataclasses import dataclass
+from typing import List, Optional, Tuple, Literal, cast
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -19,62 +22,238 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QTextEdit,
     QDialog,
+    QLabel,
+    QAbstractItemView,
+    QTabWidget,
+    QSizePolicy,
+    QSplitter,
 )
 
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.worksheet import Worksheet
 
-from rating import compute_metrics, table_values, assign_iso23936_rating
+from rating import compute_metrics, table_values, assign_iso23936_rating, Crack
 
 from canvas_gv import CanvasScene, CanvasView
 
 
+DEFAULT_LAYOUT = {
+    "window": {"size": [1000, 1070]},
+    "top_splitter": [745, 230],
+    "main_splitter": [665, 350],
+}
+
+
+@dataclass
+class SessionAnalysis:
+    index: int
+    image_name: str
+    image_path: str
+    completed_at: datetime.datetime
+    crack_count: int
+    total_pct: float
+    rating: int
+    result: str
+    cracks: List[Crack]
+    snapshot_png: Optional[bytes] = None
+
+
+RATING_METRICS = [
+    "Total crack length (% of CSD)",
+    "# cracks that are <25% CSD",
+    "All ext. cracks that are <10% CSD",
+    "# cracks that are <50% CSD",
+    "All ext. cracks that are <25% CSD",
+    "Are there 2 or fewer cracks between 50-80% CSD",
+    "All ext. cracks are <50% CSD",
+    "One or more int. cracks that are >80% CSD",
+    "Three or more int. cracks that are >50% CSD",
+    "Any splits present",
+    "OVERALL RATING",
+]
+
+RATING_THRESHOLDS = {
+    "Rating 1": [
+        "≤100% CSD",
+        "Any number",
+        "All <10%",
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        "Pass",
+    ],
+    "Rating 2": [
+        "≤200% CSD",
+        "-",
+        "-",
+        "Any number",
+        "All <25%",
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        "Pass",
+    ],
+    "Rating 3": [
+        "≤300% CSD",
+        "-",
+        "-",
+        "-",
+        "-",
+        "≤2 cracks",
+        "All <50%",
+        "-",
+        "-",
+        "-",
+        "Pass",
+    ],
+    "Rating 4": [
+        "> 300% CSD",
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        "Any >50%",
+        "≥1 crack >80%",
+        "≥3 cracks >50%",
+        "-",
+        "Fail",
+    ],
+    "Rating 5": [
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        "Yes",
+        "Fail",
+    ],
+}
+
+RATING_HEADER_LABELS = ["Metric", "Value"] + list(RATING_THRESHOLDS.keys())
+
+
 class MainWindow(QMainWindow):
-    def __init__(self):
-        window_size = [850, 900]
+    def __init__(self, debug_layout: bool = False):
+        window_size = DEFAULT_LAYOUT["window"]["size"]
         super().__init__()
         self.setWindowTitle("oRinGD - ISO23936-2 Annex B Analyzer")
         self.resize(window_size[0], window_size[1])
-        self.setFixedSize(window_size[0], window_size[1])
+        self.setMinimumSize(1000, 720)
 
         self.current_image_path: Optional[str] = None
         self._has_shown_crack_prompt = False
+        self.session_records: List[SessionAnalysis] = []
+        self.debug_layout = debug_layout
+        self.settings_path = os.path.join(os.path.dirname(__file__), "layout_prefs.json")
 
         central = QWidget()
         self.setCentralWidget(central)
         root_layout = QVBoxLayout(central)
 
-        content_layout = QHBoxLayout()
-        root_layout.addLayout(content_layout, stretch=32)
-
         self.scene = CanvasScene()
         self.view = CanvasView(self.scene)
-        self.view.setMinimumSize(600, 400)
-        content_layout.addWidget(self.view, stretch=32)
+        self.view.setMinimumSize(700, 500)
 
         self.crack_table_widget = QTableWidget()
         self.crack_table_widget.setColumnCount(3)
         self.crack_table_widget.setHorizontalHeaderLabels(["Crack #", "Type", "Length, % of CSD"])
-        self.crack_table_widget.verticalHeader().setVisible(False)
+        crack_vheader = self.crack_table_widget.verticalHeader()
+        if crack_vheader:
+            crack_vheader.setVisible(False)
         self.crack_table_widget.setColumnWidth(0, 50)
         self.crack_table_widget.setColumnWidth(1, 75)
         crack_header = self.crack_table_widget.horizontalHeader()
-        crack_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        content_layout.addWidget(self.crack_table_widget, stretch=17)
+        if crack_header:
+            crack_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.crack_table_widget.setMinimumWidth(220)
+
+        self.top_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.top_splitter.addWidget(self.view)
+        self.top_splitter.addWidget(self.crack_table_widget)
+        self.top_splitter.setStretchFactor(0, 5)
+        self.top_splitter.setStretchFactor(1, 2)
+
+        tabs = QTabWidget()
+        tabs.setDocumentMode(True)
+
+        rating_tab = QWidget()
+        rating_layout = QVBoxLayout(rating_tab)
+        rating_layout.setContentsMargins(0, 0, 0, 0)
 
         self.rating_table_widget = QTableWidget()
         self.rating_table_widget.setColumnCount(7)
         self.rating_table_widget.setHorizontalHeaderLabels(
             ["Metric", "Value", "Rating 1", "Rating 2", "Rating 3", "Rating 4", "Rating 5"]
         )
-        self.rating_table_widget.verticalHeader().setVisible(False)
-        root_layout.addWidget(self.rating_table_widget, stretch=17)
+        rating_vheader = self.rating_table_widget.verticalHeader()
+        if rating_vheader:
+            rating_vheader.setVisible(False)
+        self.rating_table_widget.setMinimumHeight(320)
+        self.rating_table_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        if rating_vheader:
+            rating_vheader.setDefaultSectionSize(26)
+            rating_vheader.setMinimumSectionSize(24)
+        rating_layout.addWidget(self.rating_table_widget)
+        tabs.addTab(rating_tab, "Current Analysis")
+
+        session_tab = QWidget()
+        session_layout = QVBoxLayout(session_tab)
+        session_layout.setContentsMargins(0, 0, 0, 0)
+
+        session_label = QLabel("Session Summary")
+        session_label.setStyleSheet("font-weight: bold;")
+        session_layout.addWidget(session_label)
+
+        self.session_table_widget = QTableWidget()
+        self.session_table_widget.setMinimumHeight(160)
+        self.session_table_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        session_vheader = self.session_table_widget.verticalHeader()
+        if session_vheader:
+            session_vheader.setDefaultSectionSize(24)
+            session_vheader.setMinimumSectionSize(20)
+        session_layout.addWidget(self.session_table_widget, stretch=1)
+
+        session_actions_layout = QHBoxLayout()
+        self.edit_session_button = QPushButton("Edit Selected")
+        self.edit_session_button.clicked.connect(self.edit_selected_analysis)
+        session_actions_layout.addWidget(self.edit_session_button)
+
+        self.delete_session_button = QPushButton("Delete Selected")
+        self.delete_session_button.clicked.connect(self.delete_selected_analysis)
+        session_actions_layout.addWidget(self.delete_session_button)
+        session_actions_layout.addStretch(1)
+        session_layout.addLayout(session_actions_layout)
+
+        tabs.addTab(session_tab, "Session Summary")
+        self.tab_widget = tabs
+
+        self.main_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.main_splitter.addWidget(self.top_splitter)
+        self.main_splitter.addWidget(tabs)
+        self.main_splitter.setStretchFactor(0, 5)
+        self.main_splitter.setStretchFactor(1, 2)
+        root_layout.addWidget(self.main_splitter, stretch=1)
+
+        self.apply_layout_defaults()
 
         button_layout = QHBoxLayout()
 
-        image_button = QPushButton("Select Image")
-        image_button.clicked.connect(self.select_image)
-        button_layout.addWidget(image_button)
+        self.image_button = QPushButton("Load Image")
+        self.image_button.clicked.connect(self.select_image)
+        button_layout.addWidget(self.image_button)
 
         perim_mode_button = QPushButton("Perimeter Mode")
         perim_mode_button.clicked.connect(lambda: self.view.set_mode('draw_perimeter'))
@@ -84,13 +263,13 @@ class MainWindow(QMainWindow):
         crack_mode_button.clicked.connect(lambda: self.view.set_mode('draw_crack'))
         button_layout.addWidget(crack_mode_button)
 
-        clear_button = QPushButton("Clear Session")
-        clear_button.clicked.connect(self.clear_session)
+        clear_button = QPushButton("Clear Active Analysis")
+        clear_button.clicked.connect(self.clear_active_analysis)
         button_layout.addWidget(clear_button)
 
-        save_report_button = QPushButton("Save Report")
-        save_report_button.clicked.connect(self.saveAsExcel)
-        button_layout.addWidget(save_report_button)
+        self.save_report_button = QPushButton("Save Report")
+        self.save_report_button.clicked.connect(self.saveAsExcel)
+        button_layout.addWidget(self.save_report_button)
 
         debug_button = QPushButton("Debug Current Rating")
         debug_button.clicked.connect(self.debug_current_rating)
@@ -103,13 +282,25 @@ class MainWindow(QMainWindow):
         root_layout.addLayout(button_layout)
 
         self.initialize_rating_table()
+        self.initialize_session_table()
         self.refresh_tables()
 
         self.view.perimeterUpdated.connect(self.refresh_tables)
         self.view.cracksUpdated.connect(self.refresh_tables)
+        self.view.perimeterUpdated.connect(self.update_action_states)
+        self.view.cracksUpdated.connect(self.update_action_states)
         self.view.modeChanged.connect(self.on_mode_changed)
+        self.view.analysisFinalizeRequested.connect(self.finalize_current_analysis)
+
+        if self.debug_layout:
+            self.restore_layout_preferences()
+
+        selection_model = self.session_table_widget.selectionModel()
+        if selection_model:
+            selection_model.selectionChanged.connect(lambda *_: self.update_action_states())
 
         self.show()
+        self.update_action_states()
         self.show_perimeter_prompt()
 
     def on_mode_changed(self, mode: str):
@@ -122,6 +313,222 @@ class MainWindow(QMainWindow):
     def refresh_tables(self):
         self.update_crack_table()
         self.update_rating_table()
+        self.update_action_states()
+
+    def initialize_session_table(self):
+        headers = ["#", "Image", "Completed", "Cracks", "Total % CSD", "Rating", "Result"]
+        self.session_table_widget.setColumnCount(len(headers))
+        self.session_table_widget.setHorizontalHeaderLabels(headers)
+        sess_vheader = self.session_table_widget.verticalHeader()
+        if sess_vheader:
+            sess_vheader.setVisible(False)
+        header = self.session_table_widget.horizontalHeader()
+        if header:
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+            header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        self.session_table_widget.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.session_table_widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.session_table_widget.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.session_table_widget.setAlternatingRowColors(True)
+        self.refresh_session_table()
+
+    def refresh_session_table(self):
+        self.session_table_widget.setRowCount(len(self.session_records))
+        for row, record in enumerate(self.session_records):
+            values = [
+                str(record.index),
+                record.image_name,
+                record.completed_at.strftime("%Y-%m-%d %H:%M:%S"),
+                str(record.crack_count),
+                f"{record.total_pct:.2f}%",
+                str(record.rating),
+                record.result,
+            ]
+            for col, text in enumerate(values):
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if col == 1:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                self.session_table_widget.setItem(row, col, item)
+
+            result_item = self.session_table_widget.item(row, 6)
+            if result_item:
+                if record.result == "Pass":
+                    result_item.setBackground(Qt.GlobalColor.green)
+                    result_item.setForeground(Qt.GlobalColor.black)
+                else:
+                    result_item.setBackground(Qt.GlobalColor.red)
+                    result_item.setForeground(Qt.GlobalColor.white)
+
+        self.session_table_widget.resizeRowsToContents()
+
+    def get_selected_session_row(self) -> Optional[int]:
+        selection_model = self.session_table_widget.selectionModel()
+        if not selection_model:
+            return None
+        rows = selection_model.selectedRows()
+        if not rows:
+            return None
+        return rows[0].row()
+
+    def delete_selected_analysis(self):
+        row = self.get_selected_session_row()
+        if row is None:
+            QMessageBox.information(self, "Select Analysis", "Choose a session entry to delete.")
+            return
+        record = self.session_records[row]
+        response = QMessageBox.question(
+            self,
+            "Delete Analysis?",
+            f"Remove the recorded analysis for {record.image_name}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if response != QMessageBox.StandardButton.Yes:
+            return
+        self.session_records.pop(row)
+        self.reindex_session_records()
+        self.refresh_session_table()
+        self.session_table_widget.clearSelection()
+        self.update_action_states()
+
+    def edit_selected_analysis(self):
+        row = self.get_selected_session_row()
+        if row is None:
+            QMessageBox.information(self, "Select Analysis", "Choose a session entry to edit.")
+            return
+        record = self.session_records[row]
+
+        if self.has_active_analysis_data():
+            response = QMessageBox.question(
+                self,
+                "Replace Current Analysis?",
+                "Current, unfinalized work will be discarded. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if response != QMessageBox.StandardButton.Yes:
+                return
+
+        if not os.path.exists(record.image_path):
+            QMessageBox.warning(
+                self,
+                "Image Missing",
+                f"Cannot find {record.image_path}. The session entry will be removed.",
+            )
+            self.session_records.pop(row)
+            self.reindex_session_records()
+            self.refresh_session_table()
+            self.update_action_states()
+            return
+
+        if not self.view.load_image(record.image_path):
+            QMessageBox.warning(self, "Load Failed", "Unable to load the selected image for editing.")
+            return
+
+        self.session_records.pop(row)
+        self.reindex_session_records()
+        self.refresh_session_table()
+        self.session_table_widget.clearSelection()
+
+        self.current_image_path = record.image_path
+        self.view.set_mode('draw_perimeter')
+        self._has_shown_crack_prompt = False
+        self.refresh_tables()
+        self.show_perimeter_prompt()
+        QMessageBox.information(
+            self,
+            "Edit Mode",
+            f"Recreate the perimeter and cracks for {record.image_name}, then finalize again when ready.",
+        )
+        self.update_action_states()
+
+    def reindex_session_records(self):
+        for idx, record in enumerate(self.session_records, start=1):
+            record.index = idx
+
+    def layout_preferences_payload(self) -> dict:
+        return {
+            "window": {
+                "size": [self.width(), self.height()],
+            },
+            "top_splitter": self.top_splitter.sizes() if hasattr(self, "top_splitter") else [],
+            "main_splitter": self.main_splitter.sizes() if hasattr(self, "main_splitter") else [],
+        }
+
+    def save_layout_preferences(self) -> None:
+        if not self.debug_layout:
+            return
+        try:
+            with open(self.settings_path, "w", encoding="utf-8") as fp:
+                json.dump(self.layout_preferences_payload(), fp, indent=2)
+        except OSError:
+            pass
+
+    def restore_layout_preferences(self) -> None:
+        if not self.debug_layout:
+            return
+        if not os.path.exists(self.settings_path):
+            return
+        try:
+            with open(self.settings_path, "r", encoding="utf-8") as fp:
+                data = json.load(fp)
+        except (OSError, json.JSONDecodeError):
+            return
+
+        window = data.get("window", {})
+        size = window.get("size")
+        if isinstance(size, list) and len(size) == 2:
+            try:
+                self.resize(int(size[0]), int(size[1]))
+            except (TypeError, ValueError):
+                pass
+
+        top_sizes = data.get("top_splitter")
+        if isinstance(top_sizes, list) and hasattr(self, "top_splitter"):
+            self.top_splitter.setSizes([int(s) for s in top_sizes if isinstance(s, (int, float))])
+
+        main_sizes = data.get("main_splitter")
+        if isinstance(main_sizes, list) and hasattr(self, "main_splitter"):
+            self.main_splitter.setSizes([int(s) for s in main_sizes if isinstance(s, (int, float))])
+
+    def closeEvent(self, event):
+        self.save_layout_preferences()
+        super().closeEvent(event)
+
+    def apply_layout_defaults(self):
+        size = DEFAULT_LAYOUT.get("window", {}).get("size")
+        if isinstance(size, list) and len(size) == 2:
+            self.resize(int(size[0]), int(size[1]))
+        top_sizes = DEFAULT_LAYOUT.get("top_splitter")
+        if isinstance(top_sizes, list) and hasattr(self, "top_splitter"):
+            self.top_splitter.setSizes(top_sizes)
+        main_sizes = DEFAULT_LAYOUT.get("main_splitter")
+        if isinstance(main_sizes, list) and hasattr(self, "main_splitter"):
+            self.main_splitter.setSizes(main_sizes)
+
+    def has_active_analysis_data(self) -> bool:
+        perimeter = self.view.get_perimeter_data()
+        _, cracks = self.view.engine_inputs()
+        if len(perimeter.spline_points) >= 3 or len(perimeter.control_points) >= 3:
+            return True
+        return len(cracks) > 0
+
+    def can_finalize_analysis(self) -> bool:
+        if not self.current_image_path:
+            return False
+        perimeter = self.view.get_perimeter_data()
+        return len(perimeter.spline_points) >= 3
+
+    def update_action_states(self):
+        if hasattr(self, "save_report_button"):
+            self.save_report_button.setEnabled(bool(self.session_records))
+        selection_model = self.session_table_widget.selectionModel() if hasattr(self, "session_table_widget") else None
+        has_selection = bool(selection_model and selection_model.hasSelection())
+        if hasattr(self, "edit_session_button"):
+            self.edit_session_button.setEnabled(has_selection)
+        if hasattr(self, "delete_session_button"):
+            self.delete_session_button.setEnabled(has_selection)
 
     def update_crack_table(self):
         _, cracks = self.view.engine_inputs()
@@ -139,104 +546,24 @@ class MainWindow(QMainWindow):
             self.crack_table_widget.setItem(row, 2, length_item)
 
     def initialize_rating_table(self):
-        metrics = [
-            "Total crack length (% of CSD)",
-            "# cracks that are <25% CSD",
-            "All ext. cracks that are <10% CSD",
-            "# cracks that are <50% CSD",
-            "All ext. cracks that are <25% CSD",
-            "Are there 2 or fewer cracks between 50-80% CSD",
-            "All ext. cracks are <50% CSD",
-            "One or more int. cracks that are >80% CSD",
-            "Three or more int. cracks that are >50% CSD",
-            "Any splits present",
-            "OVERALL RATING",
-        ]
-
-        thresholds = {
-            "Rating 1": [
-                "≤100% CSD",
-                "Any number",
-                "All <10%",
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
-                "Pass",
-            ],
-            "Rating 2": [
-                "≤200% CSD",
-                "-",
-                "-",
-                "Any number",
-                "All <25%",
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
-                "Pass",
-            ],
-            "Rating 3": [
-                "≤300% CSD",
-                "-",
-                "-",
-                "-",
-                "-",
-                "≤2 cracks",
-                "All <50%",
-                "-",
-                "-",
-                "-",
-                "Pass",
-            ],
-            "Rating 4": [
-                "> 300% CSD",
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
-                "Any >50%",
-                "≥1 crack >80%",
-                "≥3 cracks >50%",
-                "-",
-                "Fail",
-            ],
-            "Rating 5": [
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
-                "Yes",
-                "Fail",
-            ],
-        }
-
-        self.rating_table_widget.setRowCount(len(metrics))
-        self.rating_table_widget.setColumnCount(len(thresholds) + 2)
-        self.rating_table_widget.setHorizontalHeaderLabels(["Metric", "Value"] + list(thresholds.keys()))
+        self.rating_table_widget.setRowCount(len(RATING_METRICS))
+        self.rating_table_widget.setColumnCount(len(RATING_HEADER_LABELS))
+        self.rating_table_widget.setHorizontalHeaderLabels(RATING_HEADER_LABELS)
 
         vertical_header = self.rating_table_widget.verticalHeader()
-        vertical_header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        if vertical_header:
+            vertical_header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.rating_table_widget.resizeColumnsToContents()
         header = self.rating_table_widget.horizontalHeader()
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        if header:
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.rating_table_widget.setColumnWidth(0, 275)
 
-        for row, metric in enumerate(metrics):
+        for row, metric in enumerate(RATING_METRICS):
             self.rating_table_widget.setItem(row, 0, QTableWidgetItem(metric))
-            for col, threshold_key in enumerate(thresholds.keys(), start=2):
+            for col, threshold_key in enumerate(RATING_THRESHOLDS.keys(), start=2):
                 self.rating_table_widget.setColumnWidth(col, 90)
-                threshold_item = QTableWidgetItem(thresholds[threshold_key][row])
+                threshold_item = QTableWidgetItem(RATING_THRESHOLDS[threshold_key][row])
                 threshold_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.rating_table_widget.setItem(row, col, threshold_item)
 
@@ -281,12 +608,24 @@ class MainWindow(QMainWindow):
             overall_item.setBackground(Qt.GlobalColor.red)
             overall_item.setForeground(Qt.GlobalColor.white)
 
-        self.rating_table_widget.viewport().update()
+        viewport = self.rating_table_widget.viewport()
+        if viewport:
+            viewport.update()
 
     def select_image(self):
+        if self.current_image_path and self.has_active_analysis_data():
+            response = QMessageBox.question(
+                self,
+                "Replace Current Analysis?",
+                "Loading another image will discard the in-progress analysis. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if response != QMessageBox.StandardButton.Yes:
+                return
+
         fname, _ = QFileDialog.getOpenFileName(
             self,
-            "Select Image",
+            "Load Image",
             "",
             "Images (*.png *.jpg *.jpeg *.bmp)",
         )
@@ -299,12 +638,38 @@ class MainWindow(QMainWindow):
         self.view.set_mode('draw_perimeter')
         self._has_shown_crack_prompt = False
         self.show_perimeter_prompt()
+        self.update_action_states()
 
-    def clear_session(self):
+    def finalize_current_analysis(self):
+        if not self.current_image_path:
+            QMessageBox.warning(self, "No Image", "Load an image before finalizing an analysis.")
+            return
+
+        perimeter = self.view.get_perimeter_data()
+        if len(perimeter.spline_points) < 3:
+            QMessageBox.warning(self, "Incomplete Perimeter", "Define and confirm the perimeter before finalizing.")
+            return
+
+        _, cracks = self.view.engine_inputs()
+        metrics = compute_metrics(cracks)
+        rating = assign_iso23936_rating(cracks)
+        result = "Pass" if rating <= 3 else "Fail"
+        next_action = self._prompt_post_finalize_action(rating, result)
+        if next_action == "continue":
+            return
+
+        self._store_finalized_analysis(cracks, metrics, rating, result)
+
+        if next_action == "load":
+            self.select_image()
+        elif next_action == "report":
+            self.saveAsExcel()
+
+    def clear_active_analysis(self):
         response = QMessageBox.question(
             self,
-            "Clear Session?",
-            "Are you sure you want to clear the session? All data will be lost.",
+            "Clear Active Analysis?",
+            "Remove current perimeter and crack traces? Finalized analyses remain in the session table.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if response == QMessageBox.StandardButton.Yes:
@@ -312,6 +677,7 @@ class MainWindow(QMainWindow):
             self.view.set_mode('draw_perimeter')
             self._has_shown_crack_prompt = False
             self.refresh_tables()
+            self.update_action_states()
 
     def saveCanvas(self, file_path: Optional[str] = None, suppress_conf: bool = False):
         if not file_path:
@@ -327,15 +693,83 @@ class MainWindow(QMainWindow):
             if not suppress_conf:
                 QMessageBox.information(self, "Success", f"Image saved to {file_path}")
 
+    def _capture_view_snapshot(self) -> Optional[bytes]:
+        try:
+            pixmap = self.view.grab()
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                temp_path = tmp.name
+            if not pixmap.save(temp_path, "PNG"):
+                os.remove(temp_path)
+                return None
+            with open(temp_path, "rb") as fp:
+                data = fp.read()
+            os.remove(temp_path)
+            return data
+        except Exception:
+            return None
+
+    def _prompt_post_finalize_action(self, rating: int, result: str) -> Literal["load", "report", "continue"]:
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Finalize Analysis")
+        dialog.setText(f"Analysis will be recorded with Rating {rating} ({result}).")
+        dialog.setInformativeText("What would you like to do next?")
+        load_button = dialog.addButton("Load Another Image", QMessageBox.ButtonRole.AcceptRole)
+        report_button = dialog.addButton("Produce Report", QMessageBox.ButtonRole.ActionRole)
+        continue_button = dialog.addButton("Continue Drawing", QMessageBox.ButtonRole.RejectRole)
+        dialog.setDefaultButton(load_button)
+        dialog.exec()
+
+        clicked = dialog.clickedButton()
+        if clicked == load_button:
+            return "load"
+        if clicked == report_button:
+            return "report"
+        if clicked == continue_button:
+            return "continue"
+        return "continue"
+
+    def _store_finalized_analysis(
+        self,
+        cracks: List[Crack],
+        metrics,
+        rating: int,
+        result: str,
+    ) -> SessionAnalysis:
+        image_path = self.current_image_path or ""
+        image_name = os.path.basename(image_path) if image_path else "Unknown Image"
+        snapshot_png = self._capture_view_snapshot()
+
+        record = SessionAnalysis(
+            index=len(self.session_records) + 1,
+            image_name=image_name,
+            image_path=image_path,
+            completed_at=datetime.datetime.now(),
+            crack_count=metrics.num_cracks,
+            total_pct=metrics.total_pct,
+            rating=rating,
+            result=result,
+            cracks=list(cracks),
+            snapshot_png=snapshot_png,
+        )
+
+        self.session_records.append(record)
+        self.refresh_session_table()
+        self.session_table_widget.scrollToBottom()
+
+        self.view.clear_overlays()
+        self.current_image_path = None
+        self.refresh_tables()
+        self.update_action_states()
+
+        return record
+
     def saveAsExcel(self):
-        if not self.current_image_path:
-            QMessageBox.warning(self, "No Image!", "No image has been loaded. Please load an image first.")
+        if not self.session_records:
+            QMessageBox.warning(self, "No Analyses", "Finalize at least one analysis before saving a report.")
             return
 
-        image_name = os.path.basename(self.current_image_path)
-        base_name = os.path.splitext(image_name)[0]
         current_date = datetime.datetime.now().strftime("%m%d%Y")
-        default_report_name = f"{base_name} - report - {current_date}.xlsx"
+        default_report_name = f"session-report-{current_date}.xlsx"
 
         file_path, _ = QFileDialog.getSaveFileName(
             self,
@@ -348,47 +782,133 @@ class MainWindow(QMainWindow):
             return
 
         workbook = Workbook()
-        image_sheet = workbook.active
-        image_sheet.title = f"{base_name} Analysis"
+        summary_sheet = cast(Optional[Worksheet], workbook.active)
+        if summary_sheet is None:
+            summary_sheet = workbook.create_sheet("Session Summary")
+        else:
+            summary_sheet.title = "Session Summary"
+        self._populate_session_summary_sheet(summary_sheet)
 
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
-            temp_image_path = temp_file.name
-        self.saveCanvas(temp_image_path, suppress_conf=True)
+        temp_image_paths: List[str] = []
 
-        excel_image = Image(temp_image_path)
-        image_sheet.add_image(excel_image, "B2")
+        try:
+            for record in self.session_records:
+                snapshot_path = None
+                if record.snapshot_png:
+                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                        tmp.write(record.snapshot_png)
+                        snapshot_path = tmp.name
+                    temp_image_paths.append(snapshot_path)
+                self._add_analysis_sheet(workbook, record, snapshot_path)
 
-        header_row = 2
-        for col in range(self.rating_table_widget.columnCount()):
-            header_item = self.rating_table_widget.horizontalHeaderItem(col)
-            header_value = header_item.text() if header_item else ""
-            header_cell = image_sheet.cell(row=header_row, column=12 + col)
-            header_cell.value = header_value
+            workbook.save(file_path)
+            QMessageBox.information(self, "Success", f"Report saved to {file_path}")
+        finally:
+            for tmp_path in temp_image_paths:
+                if tmp_path and os.path.exists(tmp_path):
+                    os.remove(tmp_path)
 
-        start_row = header_row + 1
-        for row in range(self.rating_table_widget.rowCount()):
-            for col in range(self.rating_table_widget.columnCount()):
-                item = self.rating_table_widget.item(row, col)
-                value = item.text() if item else ""
-                cell = image_sheet.cell(row=start_row + row, column=12 + col)
-                cell.value = value
+    def _populate_session_summary_sheet(self, sheet):
+        sheet["A1"] = "Completed Analyses"
+        headers = ["#", "Image", "Completed", "Cracks", "Total % CSD", "Rating", "Result"]
+        for idx, header in enumerate(headers, start=1):
+            sheet.cell(row=2, column=idx, value=header)
 
-        image_sheet.column_dimensions["L"].width = 50
-        for col_letter in ["M", "N", "O", "P", "Q", "R"]:
-            image_sheet.column_dimensions[col_letter].width = 20
+        for offset, record in enumerate(self.session_records, start=1):
+            row_idx = 2 + offset
+            sheet.cell(row=row_idx, column=1, value=record.index)
+            sheet.cell(row=row_idx, column=2, value=record.image_name)
+            sheet.cell(row=row_idx, column=3, value=record.completed_at.strftime("%Y-%m-%d %H:%M:%S"))
+            sheet.cell(row=row_idx, column=4, value=record.crack_count)
+            sheet.cell(row=row_idx, column=5, value=f"{record.total_pct:.2f}%")
+            sheet.cell(row=row_idx, column=6, value=record.rating)
+            sheet.cell(row=row_idx, column=7, value=record.result)
 
-        crack_sheet = workbook.create_sheet("Crack List")
-        crack_sheet.append(["Crack #", "Type", "Length (% of CSD)"])
-        for row in range(self.crack_table_widget.rowCount()):
-            crack_sheet.append([
-                self.crack_table_widget.item(row, 0).text() if self.crack_table_widget.item(row, 0) else "",
-                self.crack_table_widget.item(row, 1).text() if self.crack_table_widget.item(row, 1) else "",
-                self.crack_table_widget.item(row, 2).text() if self.crack_table_widget.item(row, 2) else "",
-            ])
+        analytics_widths = [6, 28, 20, 10, 14, 10, 10]
+        for idx, width in enumerate(analytics_widths, start=1):
+            sheet.column_dimensions[get_column_letter(idx)].width = width
 
-        workbook.save(file_path)
-        QMessageBox.information(self, "Success", f"Report saved to {file_path}")
-        os.remove(temp_image_path)
+    def _add_analysis_sheet(self, workbook: Workbook, record: SessionAnalysis, snapshot_path: Optional[str]):
+        base_title = f"{record.index:02d} - {os.path.splitext(record.image_name)[0]}"
+        sheet_title = self._make_unique_sheet_title(workbook, base_title)
+        sheet = workbook.create_sheet(sheet_title)
+
+        if snapshot_path and os.path.exists(snapshot_path):
+            excel_image = Image(snapshot_path)
+            sheet.add_image(excel_image, "B2")
+
+        metadata = [
+            ("Image", record.image_name),
+            ("Completed", record.completed_at.strftime("%Y-%m-%d %H:%M:%S")),
+            ("Cracks", record.crack_count),
+            ("Total % CSD", f"{record.total_pct:.2f}%"),
+            ("Rating", record.rating),
+            ("Result", record.result),
+        ]
+
+        for offset, (label, value) in enumerate(metadata, start=2):
+            sheet.cell(row=offset, column=2, value=label)
+            sheet.cell(row=offset, column=3, value=value)
+
+        self._write_rating_table_to_sheet(sheet, record)
+        self._write_crack_table_to_sheet(sheet, record)
+
+    def _make_unique_sheet_title(self, workbook: Workbook, base_title: str) -> str:
+        invalid_chars = set('[]:*?/\\')
+        sanitized = ''.join('_' if c in invalid_chars else c for c in base_title).strip()
+        sanitized = sanitized or "Analysis"
+        sanitized = sanitized[:31]
+
+        if sanitized not in workbook.sheetnames:
+            return sanitized
+
+        suffix = 2
+        while True:
+            suffix_text = f" ({suffix})"
+            trimmed = sanitized[: 31 - len(suffix_text)]
+            candidate = f"{trimmed}{suffix_text}"
+            if candidate not in workbook.sheetnames:
+                return candidate
+            suffix += 1
+
+    def _write_rating_table_to_sheet(self, sheet, record: SessionAnalysis, start_row: int = 2, start_col: int = 12):
+        header_row = start_row
+        for offset, header in enumerate(RATING_HEADER_LABELS):
+            sheet.cell(row=header_row, column=start_col + offset, value=header)
+
+        metrics = compute_metrics(record.cracks)
+        values = table_values(metrics)
+        overall_text = f"Rating: {record.rating} - {'Pass' if record.result == 'Pass' else 'Fail'}"
+
+        for metric_idx, metric_label in enumerate(RATING_METRICS):
+            row_idx = header_row + 1 + metric_idx
+            sheet.cell(row=row_idx, column=start_col, value=metric_label)
+
+            if metric_idx < len(values):
+                sheet.cell(row=row_idx, column=start_col + 1, value=values[metric_idx])
+            else:
+                sheet.cell(row=row_idx, column=start_col + 1, value=overall_text)
+
+            for col_offset, threshold_key in enumerate(RATING_THRESHOLDS.keys(), start=2):
+                sheet.cell(
+                    row=row_idx,
+                    column=start_col + col_offset,
+                    value=RATING_THRESHOLDS[threshold_key][metric_idx],
+                )
+
+        for idx in range(len(RATING_HEADER_LABELS)):
+            col_letter = get_column_letter(start_col + idx)
+            sheet.column_dimensions[col_letter].width = 20 if idx else 50
+
+    def _write_crack_table_to_sheet(self, sheet, record: SessionAnalysis, start_row: int = 16, start_col: int = 12):
+        headers = ["Crack #", "Type", "Length (% of CSD)"]
+        for offset, header in enumerate(headers):
+            sheet.cell(row=start_row, column=start_col + offset, value=header)
+
+        for row_offset, (crack_type, length_pct) in enumerate(record.cracks, start=1):
+            sheet.cell(row=start_row + row_offset, column=start_col, value=row_offset)
+            sheet.cell(row=start_row + row_offset, column=start_col + 1, value=crack_type)
+            sheet.cell(row=start_row + row_offset, column=start_col + 2, value=f"{length_pct:.2f}%")
 
     def debug_current_rating(self):
         perimeter = self.view.get_perimeter_data()
@@ -546,9 +1066,17 @@ class MainWindow(QMainWindow):
         )
 
 
-def main():
+def main(argv: Optional[list[str]] = None):
+    parser = argparse.ArgumentParser(description="oRinGD - ISO23936-2 Annex B Analyzer")
+    parser.add_argument(
+        "--debug-layout",
+        action="store_true",
+        help="Enable saving/loading layout_prefs.json for splitter/window sizing",
+    )
+    args = parser.parse_args(argv)
+
     app = QApplication(sys.argv)
-    window = MainWindow()
+    window = MainWindow(debug_layout=args.debug_layout)
     sys.exit(app.exec())
 
 

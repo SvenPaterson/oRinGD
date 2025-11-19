@@ -155,6 +155,7 @@ class CanvasView(QGraphicsView):
     perimeterUpdated = pyqtSignal()
     cracksUpdated = pyqtSignal()
     modeChanged = pyqtSignal(str)
+    analysisFinalizeRequested = pyqtSignal()
 
     def __init__(self, scene: CanvasScene):
         super().__init__(scene)
@@ -165,6 +166,7 @@ class CanvasView(QGraphicsView):
         self.setMouseTracking(True)
 
         self._mode: str = 'idle'
+        self._controls_overlay: Optional[QLabel] = None
 
         # Visual pens
         self._perimeter_pen = QPen(Qt.GlobalColor.green, 2); self._perimeter_pen.setCosmetic(True)
@@ -195,6 +197,8 @@ class CanvasView(QGraphicsView):
         self._perimeter: Optional[PerimeterData] = None
         self._csd_px: float = 1.0  # avoid div-by-zero; recompute on perimeter changes
         self._item_to_crack: Dict[QGraphicsPathItem, CrackData] = {}
+
+        self._init_controls_overlay()
 
     def _apply_mode(self, mode: str, force_emit: bool = False):
         if self._mode == mode and not force_emit:
@@ -523,26 +527,34 @@ class CanvasView(QGraphicsView):
             p.lineTo(CoordinateManager.image_to_scene(ipt, scene.image_item))
         return p
 
-    def _delete_crack_near_scene_point(self, scene_pt: QPointF, tol_scene_px: float = 8.0) -> bool:
+    def _delete_crack_near_scene_point(self, scene_pt: QPointF, tol_scene_px: float = 14.0) -> bool:
         scene: CanvasScene = self.scene()  # type: ignore
-        if scene.image_item is None: return False
+        if scene.image_item is None:
+            return False
+
+        best_item: Optional[QGraphicsPathItem] = None
+        best_dist = tol_scene_px
         for item in list(scene.crack_items):
             path = item.path()
-            for i in range(path.elementCount()):
-                e = path.elementAt(i)
-                if QPointF(e.x, e.y).toPoint() == scene_pt.toPoint() or \
-                   (QPointF(e.x, e.y) - scene_pt).manhattanLength() <= tol_scene_px:
-                    scene.removeItem(item)
-                    scene.crack_items.remove(item)
-                    c = self._item_to_crack.pop(item, None)
-                    if c:
-                        try:
-                            self._cracks.remove(c)
-                        except ValueError:
-                            pass
-                    self.cracksUpdated.emit()
-                    return True
-        return False
+            pts = [QPointF(path.elementAt(i).x, path.elementAt(i).y) for i in range(path.elementCount())]
+            dist = self._scene_dist_to_polyline(scene_pt, pts)
+            if dist <= best_dist:
+                best_dist = dist
+                best_item = item
+
+        if not best_item:
+            return False
+
+        scene.removeItem(best_item)
+        scene.crack_items.remove(best_item)
+        crack = self._item_to_crack.pop(best_item, None)
+        if crack:
+            try:
+                self._cracks.remove(crack)
+            except ValueError:
+                pass
+        self.cracksUpdated.emit()
+        return True
 
     def _pan_by_pixels(self, dx: float, dy: float):
         p1 = self.mapToScene(self.viewport().rect().center())
@@ -574,6 +586,30 @@ class CanvasView(QGraphicsView):
                 d = math.hypot(x-px, y-py)
             best = min(best, d)
         return best
+
+    def _scene_dist_to_polyline(self, pt: QPointF, poly: List[QPointF]) -> float:
+        if len(poly) < 2:
+            return float("inf")
+        best = float("inf")
+        for a, b in zip(poly, poly[1:]):
+            d = self._scene_dist_to_segment(pt, a, b)
+            if d < best:
+                best = d
+        return best
+
+    @staticmethod
+    def _scene_dist_to_segment(p: QPointF, a: QPointF, b: QPointF) -> float:
+        ax, ay = a.x(), a.y()
+        bx, by = b.x(), b.y()
+        px, py = p.x(), p.y()
+        vx, vy = bx - ax, by - ay
+        seg_len2 = vx * vx + vy * vy
+        if seg_len2 <= 1e-6:
+            return math.hypot(px - ax, py - ay)
+        t = max(0.0, min(1.0, ((px - ax) * vx + (py - ay) * vy) / seg_len2))
+        proj_x = ax + t * vx
+        proj_y = ay + t * vy
+        return math.hypot(px - proj_x, py - proj_y)
 
     def _endpoint_on_perimeter(self, p: Tuple[float,float], eps_px: float = 3.0) -> bool:
         if not self._perimeter or len(self._perimeter.spline_points) < 3:
@@ -636,16 +672,20 @@ class CanvasView(QGraphicsView):
             self.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
             return
 
-        # Middle: perimeter generate/confirm
-        if e.button() == Qt.MouseButton.MiddleButton and self._mode == 'draw_perimeter':
-            if not self._perim_generated:
-                self._generate_perimeter_loop()
-            else:
-                if self._perim_ctrl_item:
-                    scene.removeItem(self._perim_ctrl_item); self._perim_ctrl_item = None
-                self._perim_ctrl_img.clear()
-                self._apply_mode('draw_crack')
-            return
+        # Middle: perimeter confirm or finalize analysis
+        if e.button() == Qt.MouseButton.MiddleButton:
+            if self._mode == 'draw_perimeter':
+                if not self._perim_generated:
+                    self._generate_perimeter_loop()
+                else:
+                    if self._perim_ctrl_item:
+                        scene.removeItem(self._perim_ctrl_item); self._perim_ctrl_item = None
+                    self._perim_ctrl_img.clear()
+                    self._apply_mode('draw_crack')
+                return
+            if self._mode == 'draw_crack':
+                self.analysisFinalizeRequested.emit()
+                return
 
         # Left:
         if e.button() == Qt.MouseButton.LeftButton:
@@ -767,6 +807,34 @@ class CanvasView(QGraphicsView):
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
         self._recompute_min_scale()
+        self._update_controls_overlay_position()
+
+    def _init_controls_overlay(self):
+        text = "LMB: Draw Point / Crack\nMMB: Confirm (scroll to Zoom)\nRMB: Delete Point / Crack (hold to Pan)"
+        self._controls_overlay = QLabel(text, self.viewport())
+        self._controls_overlay.setStyleSheet(
+            "background-color: rgba(0, 0, 0, 180);"
+            "color: white;"
+            "border: 1px solid rgba(255, 255, 255, 120);"
+            "border-radius: 4px;"
+            "padding: 6px;"
+            "font-size: 11px;"
+        )
+        self._controls_overlay.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self._controls_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._controls_overlay.adjustSize()
+        self._update_controls_overlay_position()
+
+    def _update_controls_overlay_position(self):
+        if not self._controls_overlay:
+            return
+        margin = 12
+        overlay_size = self._controls_overlay.sizeHint()
+        self._controls_overlay.resize(overlay_size)
+        self._controls_overlay.move(
+            margin,
+            max(margin, self.viewport().height() - overlay_size.height() - margin),
+        )
 
 # ----- for testing new zoom view features before committing -----
 class GVTestPane(QWidget):

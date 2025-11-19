@@ -17,6 +17,9 @@ Built with the help of AI because I just don't have time to git gud and write th
 - **ISO 23936-2 compliant** rating system (0-5 scale)
 - **Real-time damage assessment** with pass/fail determination
 - **Detailed metrics tracking** for quality control
+- **Session summary tracking** with per-image finalize workflow
+- **Tabbed workspace** separating live analysis metrics from the session log
+- **Resizable workspace** with splitter drag bars whose proportions persist to `layout_prefs.json`
 - **Excel report generation** with annotated images
 - **Comprehensive debug tools** for rating verification
 
@@ -57,11 +60,14 @@ pip install -r requirements.txt
 
 ```bash
 python main.py
+
+# Optional: enable layout debugging to persist splitter/window sizes
+python main.py --debug-layout
 ```
 
 ### Workflow
 
-1. **Load Image**: Click "Select Image" to load an O-ring cross-section image
+1. **Load Image**: Click "Load / Next Image" to load an O-ring cross-section image
 2. **Define Perimeter**: 
    - Left-click to add points around the O-ring perimeter
    - Middle-click to generate the perimeter spline
@@ -75,7 +81,17 @@ python main.py
    - Rating is calculated automatically per ISO 23936-2
    - Table shows individual crack metrics
    - Overall pass/fail determination displayed
-5. **Export Report**: Click "Save Report" to generate Excel documentation
+5. **Review & Resize Layout**:
+   - Drag the splitter bars between the canvas, crack table, and bottom tab area to fit your workflow
+   - The app remembers your proportions in `layout_prefs.json` (same folder as `main.py`) so you can share exact numbers for new defaults
+   - Switch between **Current Analysis** (all rating metrics) and **Session Summary** tabs as needed
+6. **Finalize & Start Next**:
+   - Click **Finalize Analysis** to lock in the current rating and add it to the session summary table
+   - Use **Load / Next Image** to immediately begin the next analysis
+7. **Manage Past Results**:
+   - Highlight a row in the session table and click **Edit Selected** to reload that image and redo the measurements
+   - Click **Delete Selected** to remove an entry that you no longer need in the session log
+8. **Export Report**: Click **Save Report** before finalizing if you need a canvas + metrics snapshot for the active image
 
 ### Crack Classification
 
