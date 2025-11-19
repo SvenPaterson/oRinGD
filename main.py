@@ -251,7 +251,7 @@ class MainWindow(QMainWindow):
 
         button_layout = QHBoxLayout()
 
-        self.image_button = QPushButton("Load / Next Image")
+        self.image_button = QPushButton("Load Image")
         self.image_button.clicked.connect(self.select_image)
         button_layout.addWidget(self.image_button)
 
@@ -262,10 +262,6 @@ class MainWindow(QMainWindow):
         crack_mode_button = QPushButton("Crack Mode")
         crack_mode_button.clicked.connect(lambda: self.view.set_mode('draw_crack'))
         button_layout.addWidget(crack_mode_button)
-
-        self.finalize_button = QPushButton("Finalize Analysis")
-        self.finalize_button.clicked.connect(self.finalize_current_analysis)
-        button_layout.addWidget(self.finalize_button)
 
         clear_button = QPushButton("Clear Active Analysis")
         clear_button.clicked.connect(self.clear_active_analysis)
@@ -525,8 +521,6 @@ class MainWindow(QMainWindow):
         return len(perimeter.spline_points) >= 3
 
     def update_action_states(self):
-        if hasattr(self, "finalize_button"):
-            self.finalize_button.setEnabled(self.can_finalize_analysis())
         if hasattr(self, "save_report_button"):
             self.save_report_button.setEnabled(bool(self.session_records))
         selection_model = self.session_table_widget.selectionModel() if hasattr(self, "session_table_widget") else None

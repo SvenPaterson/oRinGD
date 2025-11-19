@@ -166,6 +166,7 @@ class CanvasView(QGraphicsView):
         self.setMouseTracking(True)
 
         self._mode: str = 'idle'
+        self._controls_overlay: Optional[QLabel] = None
 
         # Visual pens
         self._perimeter_pen = QPen(Qt.GlobalColor.green, 2); self._perimeter_pen.setCosmetic(True)
@@ -196,6 +197,8 @@ class CanvasView(QGraphicsView):
         self._perimeter: Optional[PerimeterData] = None
         self._csd_px: float = 1.0  # avoid div-by-zero; recompute on perimeter changes
         self._item_to_crack: Dict[QGraphicsPathItem, CrackData] = {}
+
+        self._init_controls_overlay()
 
     def _apply_mode(self, mode: str, force_emit: bool = False):
         if self._mode == mode and not force_emit:
@@ -804,6 +807,34 @@ class CanvasView(QGraphicsView):
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
         self._recompute_min_scale()
+        self._update_controls_overlay_position()
+
+    def _init_controls_overlay(self):
+        text = "LMB: Draw Point / Crack\nMMB: Confirm (scroll to Zoom)\nRMB: Delete Point / Crack (hold to Pan)"
+        self._controls_overlay = QLabel(text, self.viewport())
+        self._controls_overlay.setStyleSheet(
+            "background-color: rgba(0, 0, 0, 180);"
+            "color: white;"
+            "border: 1px solid rgba(255, 255, 255, 120);"
+            "border-radius: 4px;"
+            "padding: 6px;"
+            "font-size: 11px;"
+        )
+        self._controls_overlay.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self._controls_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._controls_overlay.adjustSize()
+        self._update_controls_overlay_position()
+
+    def _update_controls_overlay_position(self):
+        if not self._controls_overlay:
+            return
+        margin = 12
+        overlay_size = self._controls_overlay.sizeHint()
+        self._controls_overlay.resize(overlay_size)
+        self._controls_overlay.move(
+            margin,
+            max(margin, self.viewport().height() - overlay_size.height() - margin),
+        )
 
 # ----- for testing new zoom view features before committing -----
 class GVTestPane(QWidget):
