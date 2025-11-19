@@ -6,8 +6,8 @@ import json
 import argparse
 from typing import List, Optional, Tuple, Literal, cast
 
-from PyQt6.QtCore import Qt, QRegularExpression
-from PyQt6.QtGui import QRegularExpressionValidator
+from PyQt6.QtCore import Qt, QRegularExpression, QItemSelectionModel
+from PyQt6.QtGui import QRegularExpressionValidator, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -30,6 +30,9 @@ from PyQt6.QtWidgets import (
     QSplitter,
     QFormLayout,
     QLineEdit,
+    QMenu,
+    QScrollArea,
+    QCheckBox,
 )
 
 from openpyxl import Workbook
@@ -164,7 +167,7 @@ class NewSessionDialog(QDialog):
 
         form = QFormLayout()
         self.rdms_input = QLineEdit()
-        self.rdms_input.setPlaceholderText("e.g. 12345")
+        self.rdms_input.setPlaceholderText("e.g. 4321")
         self.rdms_input.setMaxLength(12)
         validator = QRegularExpressionValidator(QRegularExpression(r"\d{4,}"), self.rdms_input)
         self.rdms_input.setValidator(validator)
@@ -291,6 +294,8 @@ class MainWindow(QMainWindow):
 
         self.current_image_path: Optional[str] = None
         self._has_shown_crack_prompt = False
+        self._show_perimeter_tip = True
+        self._show_crack_tip = True
         self.session_records: List[SessionAnalysis] = list(session_state.records)
         self.session_metadata: Optional[SessionMetadata] = session_state.metadata
         self.session_file_path: Optional[str] = session_state.file_path
@@ -363,6 +368,8 @@ class MainWindow(QMainWindow):
         self.session_table_widget = QTableWidget()
         self.session_table_widget.setMinimumHeight(160)
         self.session_table_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.session_table_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.session_table_widget.customContextMenuRequested.connect(self.on_session_table_context_menu)
         session_vheader = self.session_table_widget.verticalHeader()
         if session_vheader:
             session_vheader.setDefaultSectionSize(24)
@@ -370,9 +377,9 @@ class MainWindow(QMainWindow):
         session_layout.addWidget(self.session_table_widget, stretch=1)
 
         session_actions_layout = QHBoxLayout()
-        self.edit_session_button = QPushButton("Edit Selected")
-        self.edit_session_button.clicked.connect(self.edit_selected_analysis)
-        session_actions_layout.addWidget(self.edit_session_button)
+        self.view_session_button = QPushButton("View Snapshot")
+        self.view_session_button.clicked.connect(self.view_selected_analysis)
+        session_actions_layout.addWidget(self.view_session_button)
 
         self.delete_session_button = QPushButton("Delete Selected")
         self.delete_session_button.clicked.connect(self.delete_selected_analysis)
@@ -383,28 +390,11 @@ class MainWindow(QMainWindow):
         tabs.addTab(session_tab, "Session Summary")
         self.tab_widget = tabs
 
-        self.main_splitter = QSplitter(Qt.Orientation.Vertical)
-        self.main_splitter.addWidget(self.top_splitter)
-        self.main_splitter.addWidget(tabs)
-        self.main_splitter.setStretchFactor(0, 5)
-        self.main_splitter.setStretchFactor(1, 2)
-        root_layout.addWidget(self.main_splitter, stretch=1)
-
-        self.apply_layout_defaults()
-
         button_layout = QHBoxLayout()
 
         self.image_button = QPushButton("Load Image")
         self.image_button.clicked.connect(self.select_image)
         button_layout.addWidget(self.image_button)
-
-        perim_mode_button = QPushButton("Perimeter Mode")
-        perim_mode_button.clicked.connect(lambda: self.view.set_mode('draw_perimeter'))
-        button_layout.addWidget(perim_mode_button)
-
-        crack_mode_button = QPushButton("Crack Mode")
-        crack_mode_button.clicked.connect(lambda: self.view.set_mode('draw_crack'))
-        button_layout.addWidget(crack_mode_button)
 
         clear_button = QPushButton("Clear Active Analysis")
         clear_button.clicked.connect(self.clear_active_analysis)
@@ -423,6 +413,15 @@ class MainWindow(QMainWindow):
         button_layout.addWidget(close_button)
 
         root_layout.addLayout(button_layout)
+
+        self.main_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.main_splitter.addWidget(self.top_splitter)
+        self.main_splitter.addWidget(tabs)
+        self.main_splitter.setStretchFactor(0, 5)
+        self.main_splitter.setStretchFactor(1, 2)
+        root_layout.addWidget(self.main_splitter, stretch=1)
+
+        self.apply_layout_defaults()
 
         self.initialize_rating_table()
         self.initialize_session_table()
@@ -516,6 +515,31 @@ class MainWindow(QMainWindow):
             return None
         return rows[0].row()
 
+    def on_session_table_context_menu(self, position):
+        index = self.session_table_widget.indexAt(position)
+        if not index.isValid():
+            return
+
+        selection_model = self.session_table_widget.selectionModel()
+        if selection_model:
+            selection_model.select(
+                index,
+                QItemSelectionModel.SelectionFlag.ClearAndSelect
+                | QItemSelectionModel.SelectionFlag.Rows,
+            )
+
+        menu = QMenu(self)
+        view_action = menu.addAction("View Snapshot")
+        delete_action = menu.addAction("Delete Analysis")
+        viewport = self.session_table_widget.viewport()
+        global_pos = viewport.mapToGlobal(position) if viewport else self.mapToGlobal(position)
+        action = menu.exec(global_pos)
+
+        if action == view_action:
+            self.view_selected_analysis()
+        elif action == delete_action:
+            self.delete_selected_analysis()
+
     def delete_selected_analysis(self):
         row = self.get_selected_session_row()
         if row is None:
@@ -537,56 +561,47 @@ class MainWindow(QMainWindow):
         self.persist_session()
         self.update_action_states()
 
-    def edit_selected_analysis(self):
+    def view_selected_analysis(self):
         row = self.get_selected_session_row()
         if row is None:
-            QMessageBox.information(self, "Select Analysis", "Choose a session entry to edit.")
+            QMessageBox.information(self, "Select Analysis", "Choose a session entry to view.")
             return
+
         record = self.session_records[row]
-
-        if self.has_active_analysis_data():
-            response = QMessageBox.question(
+        if not record.snapshot_png:
+            QMessageBox.information(
                 self,
-                "Replace Current Analysis?",
-                "Current, unfinalized work will be discarded. Continue?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                "No Snapshot",
+                "This analysis does not have a stored canvas snapshot to display.",
             )
-            if response != QMessageBox.StandardButton.Yes:
-                return
-
-        if not os.path.exists(record.image_path):
-            QMessageBox.warning(
-                self,
-                "Image Missing",
-                f"Cannot find {record.image_path}. The session entry will be removed.",
-            )
-            self.session_records.pop(row)
-            self.reindex_session_records()
-            self.refresh_session_table()
-            self.update_action_states()
             return
 
-        if not self.view.load_image(record.image_path):
-            QMessageBox.warning(self, "Load Failed", "Unable to load the selected image for editing.")
+        pixmap = QPixmap()
+        if not pixmap.loadFromData(record.snapshot_png):
+            QMessageBox.warning(self, "Snapshot Error", "Unable to render the stored snapshot image.")
             return
 
-        self.session_records.pop(row)
-        self.reindex_session_records()
-        self.refresh_session_table()
-        self.session_table_widget.clearSelection()
-        self.persist_session()
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Crack Snapshot - {record.image_name}")
+        layout = QVBoxLayout(dialog)
 
-        self.current_image_path = record.image_path
-        self.view.set_mode('draw_perimeter')
-        self._has_shown_crack_prompt = False
-        self.refresh_tables()
-        self.show_perimeter_prompt()
-        QMessageBox.information(
-            self,
-            "Edit Mode",
-            f"Recreate the perimeter and cracks for {record.image_name}, then finalize again when ready.",
-        )
-        self.update_action_states()
+        scroll_area = QScrollArea(dialog)
+        scroll_area.setWidgetResizable(True)
+        image_label = QLabel()
+        image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        image_label.setPixmap(pixmap)
+        scroll_area.setWidget(image_label)
+        layout.addWidget(scroll_area)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+
+        width = min(max(pixmap.width() + 40, 400), 1400)
+        height = min(max(pixmap.height() + 80, 400), 1000)
+        dialog.resize(width, height)
+        dialog.exec()
 
     def reindex_session_records(self):
         for idx, record in enumerate(self.session_records, start=1):
@@ -671,8 +686,8 @@ class MainWindow(QMainWindow):
             self.save_report_button.setEnabled(bool(self.session_records))
         selection_model = self.session_table_widget.selectionModel() if hasattr(self, "session_table_widget") else None
         has_selection = bool(selection_model and selection_model.hasSelection())
-        if hasattr(self, "edit_session_button"):
-            self.edit_session_button.setEnabled(has_selection)
+        if hasattr(self, "view_session_button"):
+            self.view_session_button.setEnabled(has_selection)
         if hasattr(self, "delete_session_button"):
             self.delete_session_button.setEnabled(has_selection)
 
@@ -863,7 +878,13 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Success", f"Image saved to {file_path}")
 
     def _capture_view_snapshot(self) -> Optional[bytes]:
+        overlay_was_visible = False
         try:
+            if hasattr(self, "view") and hasattr(self.view, "controls_overlay_visible"):
+                overlay_was_visible = self.view.controls_overlay_visible()
+                if overlay_was_visible and hasattr(self.view, "set_controls_overlay_visible"):
+                    self.view.set_controls_overlay_visible(False)
+
             pixmap = self.view.grab()
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
                 temp_path = tmp.name
@@ -876,6 +897,9 @@ class MainWindow(QMainWindow):
             return data
         except Exception:
             return None
+        finally:
+            if overlay_was_visible and hasattr(self.view, "set_controls_overlay_visible"):
+                self.view.set_controls_overlay_visible(True)
 
     def _prompt_post_finalize_action(self, rating: int, result: str) -> Literal["load", "report", "continue"]:
         dialog = QMessageBox(self)
@@ -1217,24 +1241,41 @@ class MainWindow(QMainWindow):
         return "\n".join(info)
 
     def show_perimeter_prompt(self):
-        QMessageBox.information(
-            self,
-            "Set Perimeter",
+        if not self._show_perimeter_tip:
+            return
+
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Set Perimeter")
+        dialog.setText(
             "Use the left-mouse button to add points around the perimeter of the o-ring.\n\n"
             "When finished, click the middle mouse button to generate the loop and review the line fit.\n\n"
             "You may use the right-mouse button to delete any points or the fitted perimeter line before confirming.\n\n"
-            "Once happy, click the middle mouse button again to confirm.\n",
+            "Once happy, click the middle mouse button again to confirm.\n"
         )
+        checkbox = QCheckBox("Don't show this again")
+        dialog.setCheckBox(checkbox)
+        dialog.exec()
+        if checkbox.isChecked():
+            self._show_perimeter_tip = False
 
     def show_crack_prompt(self):
-        QMessageBox.information(
-            self,
-            "Trace cracks",
+        self._has_shown_crack_prompt = True
+        if not self._show_crack_tip:
+            return
+
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Trace cracks")
+        dialog.setText(
             "Click and drag the left-mouse button to trace the visible cracks on the o-ring.\n\n"
             "Release the left-mouse button to confirm a crack and add it to the analysis.\n\n"
             "You may use the right-mouse button to delete any number of drawn cracks from the analysis.\n\n"
-            "You can click the 'Clear Session' button to re-start the analysis.\n",
+            "You can click the 'Clear Session' button to re-start the analysis.\n"
         )
+        checkbox = QCheckBox("Don't show this tip again (resets on restart)")
+        dialog.setCheckBox(checkbox)
+        dialog.exec()
+        if checkbox.isChecked():
+            self._show_crack_tip = False
 
 
 def main(argv: Optional[list[str]] = None):

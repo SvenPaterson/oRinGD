@@ -169,7 +169,8 @@ class CanvasView(QGraphicsView):
         self._controls_overlay: Optional[QLabel] = None
 
         # Visual pens
-        self._perimeter_pen = QPen(Qt.GlobalColor.green, 2); self._perimeter_pen.setCosmetic(True)
+        self._perimeter_pen_preview = QPen(Qt.GlobalColor.green, 2); self._perimeter_pen_preview.setCosmetic(True)
+        self._perimeter_pen_final = QPen(Qt.GlobalColor.blue, 2); self._perimeter_pen_final.setCosmetic(True)
         self._crack_pen = QPen(Qt.GlobalColor.red, 2); self._crack_pen.setCosmetic(True)
         
         # Snap/zoom
@@ -233,6 +234,7 @@ class CanvasView(QGraphicsView):
     def clear_overlays(self):
         scene: CanvasScene = self.scene()  # type: ignore
         scene.perimeter_item.setPath(QPainterPath())
+        scene.perimeter_item.setPen(self._perimeter_pen_preview)
         if self._perim_ctrl_item:
             scene.removeItem(self._perim_ctrl_item)
             self._perim_ctrl_item = None
@@ -375,7 +377,7 @@ class CanvasView(QGraphicsView):
         for px, py in spline_img[1:]:
             path.lineTo(CoordinateManager.image_to_scene((px, py), scene.image_item))
         path.closeSubpath()
-        scene.perimeter_item.setPen(self._perimeter_pen)
+        scene.perimeter_item.setPen(self._perimeter_pen_preview)
         scene.perimeter_item.setPath(path)
         self._perim_generated = True
 
@@ -389,6 +391,7 @@ class CanvasView(QGraphicsView):
     def _clear_perimeter_loop(self):
         scene: CanvasScene = self.scene()  # type: ignore
         scene.perimeter_item.setPath(QPainterPath())
+        scene.perimeter_item.setPen(self._perimeter_pen_preview)
         self._perim_generated = False
 
         # reset model copy + csd
@@ -669,7 +672,7 @@ class CanvasView(QGraphicsView):
         if e.button() == Qt.MouseButton.RightButton:
             self._rmb_pressed = True; self._rmb_panning = False
             self._rmb_last_pos = e.position()
-            self.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
+            self._set_viewport_cursor(Qt.CursorShape.OpenHandCursor)
             return
 
         # Middle: perimeter confirm or finalize analysis
@@ -681,6 +684,7 @@ class CanvasView(QGraphicsView):
                     if self._perim_ctrl_item:
                         scene.removeItem(self._perim_ctrl_item); self._perim_ctrl_item = None
                     self._perim_ctrl_img.clear()
+                    scene.perimeter_item.setPen(self._perimeter_pen_final)
                     self._apply_mode('draw_crack')
                 return
             if self._mode == 'draw_crack':
@@ -710,7 +714,7 @@ class CanvasView(QGraphicsView):
             delta = e.position() - self._rmb_last_pos
             if not self._rmb_panning and delta.manhattanLength() >= self._rmb_drag_threshold:
                 self._rmb_panning = True
-                self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+                self._set_viewport_cursor(Qt.CursorShape.ClosedHandCursor)
             if self._rmb_panning:
                 self._pan_by_pixels(delta.x(), delta.y())
                 self._rmb_last_pos = e.position()
@@ -745,7 +749,7 @@ class CanvasView(QGraphicsView):
             self._rmb_pressed = False
             was_panning = self._rmb_panning
             self._rmb_panning = False
-            self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+            self._set_viewport_cursor(Qt.CursorShape.ArrowCursor)
             if not was_panning:
                 scene: CanvasScene = self.scene()  # type: ignore
                 sp = self.mapToScene(e.position().toPoint())
@@ -808,6 +812,18 @@ class CanvasView(QGraphicsView):
         super().resizeEvent(ev)
         self._recompute_min_scale()
         self._update_controls_overlay_position()
+        
+    def controls_overlay_visible(self) -> bool:
+        return bool(self._controls_overlay and self._controls_overlay.isVisible())
+        
+    def set_controls_overlay_visible(self, visible: bool) -> None:
+        if self._controls_overlay:
+            self._controls_overlay.setVisible(visible)
+
+    def _set_viewport_cursor(self, cursor: Qt.CursorShape) -> None:
+        viewport = self.viewport()
+        if viewport:
+            viewport.setCursor(cursor)
 
     def _init_controls_overlay(self):
         text = "LMB: Draw Point / Crack\nMMB: Confirm (scroll to Zoom)\nRMB: Delete Point / Crack (hold to Pan)"
@@ -828,12 +844,15 @@ class CanvasView(QGraphicsView):
     def _update_controls_overlay_position(self):
         if not self._controls_overlay:
             return
+        viewport = self.viewport()
+        if viewport is None:
+            return
         margin = 12
         overlay_size = self._controls_overlay.sizeHint()
         self._controls_overlay.resize(overlay_size)
         self._controls_overlay.move(
             margin,
-            max(margin, self.viewport().height() - overlay_size.height() - margin),
+            max(margin, viewport.height() - overlay_size.height() - margin),
         )
 
 # ----- for testing new zoom view features before committing -----
