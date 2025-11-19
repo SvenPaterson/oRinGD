@@ -4,10 +4,10 @@ import datetime
 import tempfile
 import json
 import argparse
-from dataclasses import dataclass
 from typing import List, Optional, Tuple, Literal, cast
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QRegularExpression
+from PyQt6.QtGui import QRegularExpressionValidator
 from PyQt6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -22,11 +22,14 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QTextEdit,
     QDialog,
+    QDialogButtonBox,
     QLabel,
     QAbstractItemView,
     QTabWidget,
     QSizePolicy,
     QSplitter,
+    QFormLayout,
+    QLineEdit,
 )
 
 from openpyxl import Workbook
@@ -37,6 +40,17 @@ from openpyxl.worksheet.worksheet import Worksheet
 from rating import compute_metrics, table_values, assign_iso23936_rating, Crack
 
 from canvas_gv import CanvasScene, CanvasView
+from session_store import (
+    APP_VERSION,
+    SessionAnalysis,
+    SessionMetadata,
+    SessionState,
+    SessionFileError,
+    SessionVersionError,
+    create_session_metadata,
+    load_session_file,
+    save_session_file,
+)
 
 
 DEFAULT_LAYOUT = {
@@ -44,20 +58,6 @@ DEFAULT_LAYOUT = {
     "top_splitter": [745, 230],
     "main_splitter": [665, 350],
 }
-
-
-@dataclass
-class SessionAnalysis:
-    index: int
-    image_name: str
-    image_path: str
-    completed_at: datetime.datetime
-    crack_count: int
-    total_pct: float
-    rating: int
-    result: str
-    cracks: List[Crack]
-    snapshot_png: Optional[bytes] = None
 
 
 RATING_METRICS = [
@@ -145,23 +145,166 @@ RATING_THRESHOLDS = {
 RATING_HEADER_LABELS = ["Metric", "Value"] + list(RATING_THRESHOLDS.keys())
 
 
+WINDOW_TITLE_BASE = f"oRinGD v{APP_VERSION} - ISO23936-2 Annex B Analyzer"
+
+
+class NewSessionDialog(QDialog):
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setWindowTitle("Start New Session")
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+        intro = QLabel(
+            "Provide the RDMS project number along with the project and technician names.\n"
+            "This information will be embedded into the session file."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        form = QFormLayout()
+        self.rdms_input = QLineEdit()
+        self.rdms_input.setPlaceholderText("e.g. 12345")
+        self.rdms_input.setMaxLength(12)
+        validator = QRegularExpressionValidator(QRegularExpression(r"\d{5,}"), self.rdms_input)
+        self.rdms_input.setValidator(validator)
+        form.addRow("RDMS Project #", self.rdms_input)
+
+        self.project_input = QLineEdit()
+        self.project_input.setPlaceholderText("Project Name")
+        form.addRow("Project Name", self.project_input)
+
+        self.tech_input = QLineEdit()
+        self.tech_input.setPlaceholderText("Technician Name")
+        form.addRow("Technician", self.tech_input)
+
+        layout.addLayout(form)
+
+        self.error_label = QLabel("")
+        self.error_label.setStyleSheet("color: red;")
+        self.error_label.setWordWrap(True)
+        layout.addWidget(self.error_label)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    @property
+    def values(self) -> Tuple[str, str, str]:
+        return (
+            self.rdms_input.text().strip(),
+            self.project_input.text().strip(),
+            self.tech_input.text().strip(),
+        )
+
+    def accept(self) -> None:  # type: ignore[override]
+        error = self._validate()
+        if error:
+            self.error_label.setText(error)
+            return
+        self.error_label.clear()
+        super().accept()
+
+    def _validate(self) -> Optional[str]:
+        rdms, project, technician = self.values
+        if not rdms or not rdms.isdigit() or len(rdms) < 5:
+            return "RDMS project number must be at least 5 digits."
+        if not project:
+            return "Project name is required."
+        if not technician:
+            return "Technician name is required."
+        return None
+
+
+def prompt_session_choice(parent: Optional[QWidget] = None) -> Optional[Literal["load", "new"]]:
+    dialog = QMessageBox(parent)
+    dialog.setWindowTitle("Start Session")
+    dialog.setText("Select how you would like to begin.")
+    dialog.setIcon(QMessageBox.Icon.Question)
+    load_button = dialog.addButton("Load Existing Session", QMessageBox.ButtonRole.AcceptRole)
+    new_button = dialog.addButton("Start New Session", QMessageBox.ButtonRole.ActionRole)
+    cancel_button = dialog.addButton(QMessageBox.StandardButton.Cancel)
+    dialog.setDefaultButton(load_button)
+    dialog.exec()
+
+    clicked = dialog.clickedButton()
+    if clicked == load_button:
+        return "load"
+    if clicked == new_button:
+        return "new"
+    return None if clicked == cancel_button else None
+
+
+def bootstrap_session(parent: Optional[QWidget] = None) -> Optional[SessionState]:
+    while True:
+        choice = prompt_session_choice(parent)
+        if choice is None:
+            return None
+
+        if choice == "load":
+            file_path, _ = QFileDialog.getOpenFileName(
+                parent,
+                "Open Session",
+                "",
+                "oRinGD Session Files (*.orngd)",
+            )
+            if not file_path:
+                continue
+            try:
+                return load_session_file(file_path)
+            except SessionVersionError as exc:
+                QMessageBox.warning(parent, "Incompatible Session", str(exc))
+            except SessionFileError as exc:
+                QMessageBox.warning(parent, "Load Failed", str(exc))
+            continue
+
+        dialog = NewSessionDialog(parent)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            continue
+        rdms, project_name, technician = dialog.values
+        metadata = create_session_metadata(rdms, project_name, technician)
+        default_name = f"{metadata.project_code}.orngd"
+        file_path, _ = QFileDialog.getSaveFileName(
+            parent,
+            "Create Session File",
+            default_name,
+            "oRinGD Session Files (*.orngd)",
+        )
+        if not file_path:
+            continue
+        try:
+            save_session_file(file_path, metadata, [])
+        except SessionFileError as exc:
+            QMessageBox.warning(parent, "Session Save Failed", str(exc))
+            continue
+        return SessionState(metadata=metadata, records=[], file_path=file_path)
+
+
 class MainWindow(QMainWindow):
-    def __init__(self, debug_layout: bool = False):
+    def __init__(self, session_state: SessionState, debug_layout: bool = False):
         window_size = DEFAULT_LAYOUT["window"]["size"]
         super().__init__()
-        self.setWindowTitle("oRinGD - ISO23936-2 Annex B Analyzer")
+        self.setWindowTitle(WINDOW_TITLE_BASE)
         self.resize(window_size[0], window_size[1])
         self.setMinimumSize(1000, 720)
 
         self.current_image_path: Optional[str] = None
         self._has_shown_crack_prompt = False
-        self.session_records: List[SessionAnalysis] = []
+        self.session_records: List[SessionAnalysis] = list(session_state.records)
+        self.session_metadata: Optional[SessionMetadata] = session_state.metadata
+        self.session_file_path: Optional[str] = session_state.file_path
         self.debug_layout = debug_layout
         self.settings_path = os.path.join(os.path.dirname(__file__), "layout_prefs.json")
 
         central = QWidget()
         self.setCentralWidget(central)
         root_layout = QVBoxLayout(central)
+
+        self.session_info_label = QLabel("Active session pending")
+        self.session_info_label.setStyleSheet("font-weight: bold;")
+        root_layout.addWidget(self.session_info_label)
+        self.update_session_banner()
 
         self.scene = CanvasScene()
         self.view = CanvasView(self.scene)
@@ -391,6 +534,7 @@ class MainWindow(QMainWindow):
         self.reindex_session_records()
         self.refresh_session_table()
         self.session_table_widget.clearSelection()
+        self.persist_session()
         self.update_action_states()
 
     def edit_selected_analysis(self):
@@ -430,6 +574,7 @@ class MainWindow(QMainWindow):
         self.reindex_session_records()
         self.refresh_session_table()
         self.session_table_widget.clearSelection()
+        self.persist_session()
 
         self.current_image_path = record.image_path
         self.view.set_mode('draw_perimeter')
@@ -494,6 +639,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.save_layout_preferences()
+        self.persist_session()
         super().closeEvent(event)
 
     def apply_layout_defaults(self):
@@ -529,6 +675,29 @@ class MainWindow(QMainWindow):
             self.edit_session_button.setEnabled(has_selection)
         if hasattr(self, "delete_session_button"):
             self.delete_session_button.setEnabled(has_selection)
+
+    def update_session_banner(self):
+        if self.session_metadata:
+            info = self.session_metadata.banner_text
+            if self.session_file_path:
+                info = f"{info} | File: {os.path.basename(self.session_file_path)}"
+            title = f"{WINDOW_TITLE_BASE} | {self.session_metadata.project_code}"
+        else:
+            info = "Session not initialized"
+            title = WINDOW_TITLE_BASE
+        self.session_info_label.setText(info)
+        self.setWindowTitle(title)
+
+    def persist_session(self, silent: bool = True):
+        if not self.session_metadata or not self.session_file_path:
+            return
+        try:
+            save_session_file(self.session_file_path, self.session_metadata, self.session_records)
+        except SessionFileError as exc:
+            if silent:
+                QMessageBox.warning(self, "Session Save Failed", str(exc))
+            else:
+                raise
 
     def update_crack_table(self):
         _, cracks = self.view.engine_inputs()
@@ -760,6 +929,7 @@ class MainWindow(QMainWindow):
         self.current_image_path = None
         self.refresh_tables()
         self.update_action_states()
+        self.persist_session()
 
         return record
 
@@ -769,7 +939,8 @@ class MainWindow(QMainWindow):
             return
 
         current_date = datetime.datetime.now().strftime("%m%d%Y")
-        default_report_name = f"session-report-{current_date}.xlsx"
+        prefix = self.session_metadata.project_code if self.session_metadata else "session"
+        default_report_name = f"{prefix}-report-{current_date}.xlsx"
 
         file_path, _ = QFileDialog.getSaveFileName(
             self,
@@ -1076,7 +1247,10 @@ def main(argv: Optional[list[str]] = None):
     args = parser.parse_args(argv)
 
     app = QApplication(sys.argv)
-    window = MainWindow(debug_layout=args.debug_layout)
+    session_state = bootstrap_session()
+    if session_state is None:
+        sys.exit(0)
+    window = MainWindow(session_state, debug_layout=args.debug_layout)
     sys.exit(app.exec())
 
 

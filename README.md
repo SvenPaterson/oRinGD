@@ -18,6 +18,7 @@ Built with the help of AI because I just don't have time to git gud and write th
 - **Real-time damage assessment** with pass/fail determination
 - **Detailed metrics tracking** for quality control
 - **Session summary tracking** with per-image finalize workflow
+- **Session persistence** via `.orngd` files with RDMS/project metadata and compatibility gating
 - **Tabbed workspace** separating live analysis metrics from the session log
 - **Resizable workspace** with splitter drag bars whose proportions persist to `layout_prefs.json`
 - **Excel report generation** with annotated images
@@ -67,31 +68,34 @@ python main.py --debug-layout
 
 ### Workflow
 
-1. **Load Image**: Click "Load / Next Image" to load an O-ring cross-section image
-2. **Define Perimeter**: 
+1. **Start Session**:
+   - Choose whether to load an existing `.orngd` file or create a new session when the app launches
+   - New sessions require the RDMS project number (≥5 digits), project name, and technician name to stamp the project code (RT-XXXX_Project_YYYYMMDD)
+2. **Load Image**: Click "Load / Next Image" to load an O-ring cross-section image
+3. **Define Perimeter**: 
    - Left-click to add points around the O-ring perimeter
    - Middle-click to generate the perimeter spline
    - Right-click to remove points (before confirming)
    - Middle-click again to confirm the perimeter
-3. **Trace Cracks**:
+4. **Trace Cracks**:
    - Left-click and drag to trace visible cracks
    - Cracks are automatically classified by type
    - Right-click near a crack to delete it
-4. **View Results**:
+5. **View Results**:
    - Rating is calculated automatically per ISO 23936-2
    - Table shows individual crack metrics
    - Overall pass/fail determination displayed
-5. **Review & Resize Layout**:
+6. **Review & Resize Layout**:
    - Drag the splitter bars between the canvas, crack table, and bottom tab area to fit your workflow
    - The app remembers your proportions in `layout_prefs.json` (same folder as `main.py`) so you can share exact numbers for new defaults
    - Switch between **Current Analysis** (all rating metrics) and **Session Summary** tabs as needed
-6. **Finalize & Start Next**:
+7. **Finalize & Start Next**:
    - Click **Finalize Analysis** to lock in the current rating and add it to the session summary table
    - Use **Load / Next Image** to immediately begin the next analysis
-7. **Manage Past Results**:
+8. **Manage Past Results**:
    - Highlight a row in the session table and click **Edit Selected** to reload that image and redo the measurements
    - Click **Delete Selected** to remove an entry that you no longer need in the session log
-8. **Export Report**: Click **Save Report** before finalizing if you need a canvas + metrics snapshot for the active image
+9. **Export Report**: Click **Save Report** before finalizing if you need a canvas + metrics snapshot for the active image
 
 ### Crack Classification
 
@@ -112,6 +116,13 @@ python main.py --debug-layout
 
 *CSD = Cross-Sectional Diameter*
 
+## Session Files (.orngd)
+
+- Each session is stored as a zipped archive containing a `session.json` payload and embedded crack snapshots.
+- Session metadata captures the RDMS number, project name, technician, and generated project code (`RT-XXXX_Project_YYYYMMDD`).
+- A schema and app version are written into every file; newer files cannot be opened by older builds to avoid compatibility issues.
+- Reload a saved session by choosing **Load Existing Session** at startup and pointing to the `.orngd` file.
+
 ## Testing
 
 Run the test suite to verify ISO 23936-2 compliance:
@@ -129,11 +140,13 @@ python -m unittest tests.test_iso23936_unittest -v
 ```
 oRinGD/
 ├── main.py                 # Main application and GUI
+├── session_store.py        # Session metadata + persistence helpers
 ├── rating.py               # ISO 23936-2 rating engine
 ├── requirements.txt        # Python dependencies
 ├── README.md              # This file
 └── tests/
-    └── test_iso23936_unittest.py  # Unit tests for rating logic
+   ├── test_iso23936_unittest.py  # Unit tests for rating logic
+   └── test_session_store.py      # Session persistence tests
 ```
 
 ## Architecture
@@ -194,6 +207,6 @@ For issues, questions, or suggestions:
 
 ---
 
-**Version**: 1.0.0  
-**Last Updated**: January 2025  
+**Version**: 1.1.0  
+**Last Updated**: November 2025  
 **Author**: Stephen Garden
