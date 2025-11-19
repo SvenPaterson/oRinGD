@@ -5,7 +5,7 @@ import tempfile
 import json
 import argparse
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Literal, cast
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.worksheet import Worksheet
 
 from rating import compute_metrics, table_values, assign_iso23936_rating, Crack
 
@@ -293,6 +294,7 @@ class MainWindow(QMainWindow):
         self.view.perimeterUpdated.connect(self.update_action_states)
         self.view.cracksUpdated.connect(self.update_action_states)
         self.view.modeChanged.connect(self.on_mode_changed)
+        self.view.analysisFinalizeRequested.connect(self.finalize_current_analysis)
 
         if self.debug_layout:
             self.restore_layout_preferences()
@@ -658,37 +660,16 @@ class MainWindow(QMainWindow):
         metrics = compute_metrics(cracks)
         rating = assign_iso23936_rating(cracks)
         result = "Pass" if rating <= 3 else "Fail"
-        snapshot_png = self._capture_view_snapshot()
-        crack_values: List[Crack] = [(ctype, length) for ctype, length in cracks]
+        next_action = self._prompt_post_finalize_action(rating, result)
+        if next_action == "continue":
+            return
 
-        record = SessionAnalysis(
-            index=len(self.session_records) + 1,
-            image_name=os.path.basename(self.current_image_path),
-            image_path=self.current_image_path,
-            completed_at=datetime.datetime.now(),
-            crack_count=metrics.num_cracks,
-            total_pct=metrics.total_pct,
-            rating=rating,
-            result=result,
-            cracks=crack_values,
-            snapshot_png=snapshot_png,
-        )
+        self._store_finalized_analysis(cracks, metrics, rating, result)
 
-        self.session_records.append(record)
-        self.refresh_session_table()
-        self.session_table_widget.scrollToBottom()
-
-        QMessageBox.information(
-            self,
-            "Analysis Finalized",
-            f"{record.image_name} recorded with Rating {rating} ({result}).\n"
-            "Use 'Load / Next Image' to start the next o-ring.",
-        )
-
-        self.view.clear_overlays()
-        self.current_image_path = None
-        self.refresh_tables()
-        self.update_action_states()
+        if next_action == "load":
+            self.select_image()
+        elif next_action == "report":
+            self.saveAsExcel()
 
     def clear_active_analysis(self):
         response = QMessageBox.question(
@@ -733,6 +714,61 @@ class MainWindow(QMainWindow):
         except Exception:
             return None
 
+    def _prompt_post_finalize_action(self, rating: int, result: str) -> Literal["load", "report", "continue"]:
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Finalize Analysis")
+        dialog.setText(f"Analysis will be recorded with Rating {rating} ({result}).")
+        dialog.setInformativeText("What would you like to do next?")
+        load_button = dialog.addButton("Load Another Image", QMessageBox.ButtonRole.AcceptRole)
+        report_button = dialog.addButton("Produce Report", QMessageBox.ButtonRole.ActionRole)
+        continue_button = dialog.addButton("Continue Drawing", QMessageBox.ButtonRole.RejectRole)
+        dialog.setDefaultButton(load_button)
+        dialog.exec()
+
+        clicked = dialog.clickedButton()
+        if clicked == load_button:
+            return "load"
+        if clicked == report_button:
+            return "report"
+        if clicked == continue_button:
+            return "continue"
+        return "continue"
+
+    def _store_finalized_analysis(
+        self,
+        cracks: List[Crack],
+        metrics,
+        rating: int,
+        result: str,
+    ) -> SessionAnalysis:
+        image_path = self.current_image_path or ""
+        image_name = os.path.basename(image_path) if image_path else "Unknown Image"
+        snapshot_png = self._capture_view_snapshot()
+
+        record = SessionAnalysis(
+            index=len(self.session_records) + 1,
+            image_name=image_name,
+            image_path=image_path,
+            completed_at=datetime.datetime.now(),
+            crack_count=metrics.num_cracks,
+            total_pct=metrics.total_pct,
+            rating=rating,
+            result=result,
+            cracks=list(cracks),
+            snapshot_png=snapshot_png,
+        )
+
+        self.session_records.append(record)
+        self.refresh_session_table()
+        self.session_table_widget.scrollToBottom()
+
+        self.view.clear_overlays()
+        self.current_image_path = None
+        self.refresh_tables()
+        self.update_action_states()
+
+        return record
+
     def saveAsExcel(self):
         if not self.session_records:
             QMessageBox.warning(self, "No Analyses", "Finalize at least one analysis before saving a report.")
@@ -752,8 +788,11 @@ class MainWindow(QMainWindow):
             return
 
         workbook = Workbook()
-        summary_sheet = workbook.active
-        summary_sheet.title = "Session Summary"
+        summary_sheet = cast(Optional[Worksheet], workbook.active)
+        if summary_sheet is None:
+            summary_sheet = workbook.create_sheet("Session Summary")
+        else:
+            summary_sheet.title = "Session Summary"
         self._populate_session_summary_sheet(summary_sheet)
 
         temp_image_paths: List[str] = []

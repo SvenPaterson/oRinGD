@@ -155,6 +155,7 @@ class CanvasView(QGraphicsView):
     perimeterUpdated = pyqtSignal()
     cracksUpdated = pyqtSignal()
     modeChanged = pyqtSignal(str)
+    analysisFinalizeRequested = pyqtSignal()
 
     def __init__(self, scene: CanvasScene):
         super().__init__(scene)
@@ -668,16 +669,20 @@ class CanvasView(QGraphicsView):
             self.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
             return
 
-        # Middle: perimeter generate/confirm
-        if e.button() == Qt.MouseButton.MiddleButton and self._mode == 'draw_perimeter':
-            if not self._perim_generated:
-                self._generate_perimeter_loop()
-            else:
-                if self._perim_ctrl_item:
-                    scene.removeItem(self._perim_ctrl_item); self._perim_ctrl_item = None
-                self._perim_ctrl_img.clear()
-                self._apply_mode('draw_crack')
-            return
+        # Middle: perimeter confirm or finalize analysis
+        if e.button() == Qt.MouseButton.MiddleButton:
+            if self._mode == 'draw_perimeter':
+                if not self._perim_generated:
+                    self._generate_perimeter_loop()
+                else:
+                    if self._perim_ctrl_item:
+                        scene.removeItem(self._perim_ctrl_item); self._perim_ctrl_item = None
+                    self._perim_ctrl_img.clear()
+                    self._apply_mode('draw_crack')
+                return
+            if self._mode == 'draw_crack':
+                self.analysisFinalizeRequested.emit()
+                return
 
         # Left:
         if e.button() == Qt.MouseButton.LeftButton:
