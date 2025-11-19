@@ -1,0 +1,69 @@
+name: Version bump check
+
+on:
+  pull_request:
+    branches: [ main ]  # adjust if your default branch is different
+
+jobs:
+  ensure-version-bumped:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # we need history to read the base branch file
+
+      - name: Get base and head APP_VERSION
+        id: versions
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -e
+
+          # Fetch the base branch so we can inspect its version file
+          git fetch origin "${BASE_REF}"
+
+          cat > get_versions.py << 'PY'
+          import os, re, subprocess, pathlib, sys
+
+          VERSION_FILE = pathlib.Path("session_store.py")
+
+          def extract_version(text: str) -> str:
+            m = re.search(r'APP_VERSION\s*=\s*["\']([^"\']+)["\']', text)
+            if not m:
+              raise SystemExit("APP_VERSION not found in session_store.py")
+            return m.group(1).strip()
+
+          # Head version (current working tree = PR head)
+          head_text = VERSION_FILE.read_text(encoding="utf-8")
+          head_version = extract_version(head_text)
+
+          # Base version (from the target branch of the PR)
+          base_ref = os.environ["BASE_REF"]
+          base_blob = subprocess.check_output(
+            ["git", "show", f"origin/{base_ref}:session_store.py"],
+            text=True,
+          )
+          base_version = extract_version(base_blob)
+
+          print(f"Base APP_VERSION: {base_version}")
+          print(f"Head APP_VERSION: {head_version}")
+
+          # Export for later steps (optional)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+            f.write(f"base={base_version}\n")
+            f.write(f"head={head_version}\n")
+
+          # Fail if unchanged
+          if head_version == base_version:
+            print("ERROR: APP_VERSION has not been bumped in this PR.")
+            sys.exit(1)
+          PY
+
+          python get_versions.py
+
+      - name: Show versions (optional)
+        run: |
+          echo "Base version: ${{ steps.versions.outputs.base }}"
+          echo "Head version: ${{ steps.versions.outputs.head }}"
