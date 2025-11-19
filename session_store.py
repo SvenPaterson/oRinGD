@@ -9,8 +9,9 @@ from typing import List, Optional, Sequence, Tuple
 
 from rating import Crack
 
-APP_VERSION = "1.0.0"
-SESSION_SCHEMA_VERSION = 1
+## Major version change indicates breaking changes, Major.Minor.Patch
+APP_VERSION = "1.0.1" # new PRs require minor version bump
+SESSION_SCHEMA_VERSION = 1 ## Increment this version number when the session file format changes, it will break .orngd compatibility
 SESSION_JSON_FILENAME = "session.json"
 
 
@@ -222,10 +223,12 @@ def load_session_file(path: str) -> SessionState:
             f"Session file schema {schema_version} is newer than supported {SESSION_SCHEMA_VERSION}."
         )
 
-    file_version = payload.get("app_version", APP_VERSION)
-    if _parse_version(file_version) > _parse_version(APP_VERSION):
+    file_version = str(payload.get("app_version", APP_VERSION))
+    file_major, _, _ = _parse_version(file_version)
+    current_major, _, _ = _parse_version(APP_VERSION)
+    if file_major > current_major:
         raise SessionVersionError(
-            "Session file was created with a newer application version. Please update oRinGD."
+            "Session file was created with a newer major version of oRinGD. Please update the app."
         )
 
     metadata = _metadata_from_dict(payload.get("metadata", {}))
