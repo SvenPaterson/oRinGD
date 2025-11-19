@@ -70,7 +70,7 @@ python main.py --debug-layout
 
 1. **Start Session**:
    - Choose whether to load an existing `.orngd` file or create a new session when the app launches
-   - New sessions require the RDMS project number (≥5 digits), project name, and technician name to stamp the project code (RT-XXXX_Project_YYYYMMDD)
+   - New sessions require the RDMS project number (≥4 digits), project name, and technician name to stamp the project code (RT-XXXX_Project_YYYYMMDD)
 2. **Load Image**: Click "Load / Next Image" to load an O-ring cross-section image
 3. **Define Perimeter**: 
    - Left-click to add points around the O-ring perimeter
@@ -207,6 +207,6 @@ For issues, questions, or suggestions:
 
 ---
 
-**Version**: 1.1.0  
+**Version**: 1.0.0  
 **Last Updated**: November 2025  
 **Author**: Stephen Garden

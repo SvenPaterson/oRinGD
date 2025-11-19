@@ -145,7 +145,7 @@ RATING_THRESHOLDS = {
 RATING_HEADER_LABELS = ["Metric", "Value"] + list(RATING_THRESHOLDS.keys())
 
 
-WINDOW_TITLE_BASE = f"oRinGD v{APP_VERSION} - ISO23936-2 Annex B Analyzer"
+WINDOW_TITLE_BASE = f"oRinGD - ISO23936-2 Annex B Analyzer (v{APP_VERSION})"
 
 
 class NewSessionDialog(QDialog):
@@ -166,7 +166,7 @@ class NewSessionDialog(QDialog):
         self.rdms_input = QLineEdit()
         self.rdms_input.setPlaceholderText("e.g. 12345")
         self.rdms_input.setMaxLength(12)
-        validator = QRegularExpressionValidator(QRegularExpression(r"\d{5,}"), self.rdms_input)
+        validator = QRegularExpressionValidator(QRegularExpression(r"\d{4,}"), self.rdms_input)
         self.rdms_input.setValidator(validator)
         form.addRow("RDMS Project #", self.rdms_input)
 
@@ -208,8 +208,8 @@ class NewSessionDialog(QDialog):
 
     def _validate(self) -> Optional[str]:
         rdms, project, technician = self.values
-        if not rdms or not rdms.isdigit() or len(rdms) < 5:
-            return "RDMS project number must be at least 5 digits."
+        if not rdms or not rdms.isdigit() or len(rdms) < 4:
+            return "RDMS project number must be at least 4 digits."
         if not project:
             return "Project name is required."
         if not technician:

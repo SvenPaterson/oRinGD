@@ -9,7 +9,7 @@ from typing import List, Optional, Sequence, Tuple
 
 from rating import Crack
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.0.0"
 SESSION_SCHEMA_VERSION = 1
 SESSION_JSON_FILENAME = "session.json"
 

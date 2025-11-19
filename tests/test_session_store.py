@@ -1,15 +1,57 @@
 import datetime
+import json
 import os
 import tempfile
 import unittest
+import zipfile
 
 from session_store import (
+    APP_VERSION,
+    SESSION_SCHEMA_VERSION,
     SessionAnalysis,
+    SessionVersionError,
     create_session_metadata,
     generate_project_code,
     load_session_file,
     save_session_file,
 )
+
+
+def _write_session_archive(directory: str, *, schema_version: int, app_version: str) -> str:
+    """Create a synthetic `.orngd` file for compatibility tests."""
+    payload = {
+        "schema_version": schema_version,
+        "app_version": app_version,
+        "metadata": {
+            "rdms_project_number": "55555",
+            "project_name": "Legacy Session",
+            "technician_name": "Test Tech",
+            "project_code": "RT-55555_Legacy_20250201",
+            "created_at": "2025-02-01T10:00:00",
+            "updated_at": "2025-02-01T10:05:00",
+            "schema_version": schema_version,
+            "app_version": app_version,
+        },
+        "analyses": [
+            {
+                "index": 1,
+                "image_name": "legacy.png",
+                "image_path": "C:/data/legacy.png",
+                "completed_at": "2025-02-01T10:04:00",
+                "crack_count": 1,
+                "total_pct": 45.0,
+                "rating": 2,
+                "result": "Pass",
+                "cracks": [["Internal", 45.0]],
+                "snapshot_png": None,
+            }
+        ],
+    }
+
+    archive_path = os.path.join(directory, f"schema_{schema_version}_app_{app_version}.orngd")
+    with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("session.json", json.dumps(payload, indent=2).encode("utf-8"))
+    return archive_path
 
 
 class SessionStoreTests(unittest.TestCase):
@@ -46,6 +88,41 @@ class SessionStoreTests(unittest.TestCase):
         self.assertEqual(loaded_record.cracks[0][0], "Internal")
         self.assertEqual(loaded_record.cracks[0][1], 75.0)
         self.assertEqual(loaded_record.snapshot_png, b"demo-bytes")
+
+    def test_loads_legacy_session_archive(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            legacy_file = _write_session_archive(
+                tmpdir,
+                schema_version=SESSION_SCHEMA_VERSION,
+                app_version="1.0.0",
+            )
+            state = load_session_file(legacy_file)
+
+        self.assertEqual(state.metadata.project_name, "Legacy Session")
+        self.assertEqual(len(state.records), 1)
+        self.assertEqual(state.records[0].crack_count, 1)
+
+    def test_newer_app_version_raises_version_error(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            future_file = _write_session_archive(
+                tmpdir,
+                schema_version=SESSION_SCHEMA_VERSION,
+                app_version="9.9.9",
+            )
+
+            with self.assertRaises(SessionVersionError):
+                load_session_file(future_file)
+
+    def test_newer_schema_version_raises_version_error(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            newer_schema_file = _write_session_archive(
+                tmpdir,
+                schema_version=SESSION_SCHEMA_VERSION + 1,
+                app_version=APP_VERSION,
+            )
+
+            with self.assertRaises(SessionVersionError):
+                load_session_file(newer_schema_file)
 
 
 if __name__ == "__main__":
