@@ -54,6 +54,22 @@ def _write_session_archive(directory: str, *, schema_version: int, app_version: 
     return archive_path
 
 
+def _bump_version(version: str, part: str) -> str:
+    parts = [int(piece) for piece in version.split(".")]
+    while len(parts) < 3:
+        parts.append(0)
+    major, minor, patch = parts[:3]
+    if part == "major":
+        major += 1
+        minor = 0
+        patch = 0
+    elif part == "minor":
+        minor += 1
+    else:
+        patch += 1
+    return f"{major}.{minor}.{patch}"
+
+
 class SessionStoreTests(unittest.TestCase):
     def test_generate_project_code_format(self):
         fake_date = datetime.datetime(2025, 1, 15)
@@ -102,12 +118,24 @@ class SessionStoreTests(unittest.TestCase):
         self.assertEqual(len(state.records), 1)
         self.assertEqual(state.records[0].crack_count, 1)
 
-    def test_newer_app_version_raises_version_error(self):
+    def test_newer_minor_version_is_permitted(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            compat_file = _write_session_archive(
+                tmpdir,
+                schema_version=SESSION_SCHEMA_VERSION,
+                app_version=_bump_version(APP_VERSION, "minor"),
+            )
+
+            state = load_session_file(compat_file)
+
+        self.assertEqual(state.metadata.project_name, "Legacy Session")
+
+    def test_newer_major_version_raises_version_error(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             future_file = _write_session_archive(
                 tmpdir,
                 schema_version=SESSION_SCHEMA_VERSION,
-                app_version="9.9.9",
+                app_version=_bump_version(APP_VERSION, "major"),
             )
 
             with self.assertRaises(SessionVersionError):

@@ -222,10 +222,12 @@ def load_session_file(path: str) -> SessionState:
             f"Session file schema {schema_version} is newer than supported {SESSION_SCHEMA_VERSION}."
         )
 
-    file_version = payload.get("app_version", APP_VERSION)
-    if _parse_version(file_version) > _parse_version(APP_VERSION):
+    file_version = str(payload.get("app_version", APP_VERSION))
+    file_major, _, _ = _parse_version(file_version)
+    current_major, _, _ = _parse_version(APP_VERSION)
+    if file_major > current_major:
         raise SessionVersionError(
-            "Session file was created with a newer application version. Please update oRinGD."
+            "Session file was created with a newer major version of oRinGD. Please update the app."
         )
 
     metadata = _metadata_from_dict(payload.get("metadata", {}))
