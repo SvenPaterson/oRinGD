@@ -5,7 +5,7 @@ import tempfile
 import json
 import argparse
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -31,8 +31,9 @@ from PyQt6.QtWidgets import (
 
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image
+from openpyxl.utils import get_column_letter
 
-from rating import compute_metrics, table_values, assign_iso23936_rating
+from rating import compute_metrics, table_values, assign_iso23936_rating, Crack
 
 from canvas_gv import CanvasScene, CanvasView
 
@@ -54,6 +55,93 @@ class SessionAnalysis:
     total_pct: float
     rating: int
     result: str
+    cracks: List[Crack]
+    snapshot_png: Optional[bytes] = None
+
+
+RATING_METRICS = [
+    "Total crack length (% of CSD)",
+    "# cracks that are <25% CSD",
+    "All ext. cracks that are <10% CSD",
+    "# cracks that are <50% CSD",
+    "All ext. cracks that are <25% CSD",
+    "Are there 2 or fewer cracks between 50-80% CSD",
+    "All ext. cracks are <50% CSD",
+    "One or more int. cracks that are >80% CSD",
+    "Three or more int. cracks that are >50% CSD",
+    "Any splits present",
+    "OVERALL RATING",
+]
+
+RATING_THRESHOLDS = {
+    "Rating 1": [
+        "≤100% CSD",
+        "Any number",
+        "All <10%",
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        "Pass",
+    ],
+    "Rating 2": [
+        "≤200% CSD",
+        "-",
+        "-",
+        "Any number",
+        "All <25%",
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        "Pass",
+    ],
+    "Rating 3": [
+        "≤300% CSD",
+        "-",
+        "-",
+        "-",
+        "-",
+        "≤2 cracks",
+        "All <50%",
+        "-",
+        "-",
+        "-",
+        "Pass",
+    ],
+    "Rating 4": [
+        "> 300% CSD",
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        "Any >50%",
+        "≥1 crack >80%",
+        "≥3 cracks >50%",
+        "-",
+        "Fail",
+    ],
+    "Rating 5": [
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        "-",
+        "Yes",
+        "Fail",
+    ],
+}
+
+RATING_HEADER_LABELS = ["Metric", "Value"] + list(RATING_THRESHOLDS.keys())
 
 
 class MainWindow(QMainWindow):
@@ -438,7 +526,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "finalize_button"):
             self.finalize_button.setEnabled(self.can_finalize_analysis())
         if hasattr(self, "save_report_button"):
-            self.save_report_button.setEnabled(self.current_image_path is not None)
+            self.save_report_button.setEnabled(bool(self.session_records))
         selection_model = self.session_table_widget.selectionModel() if hasattr(self, "session_table_widget") else None
         has_selection = bool(selection_model and selection_model.hasSelection())
         if hasattr(self, "edit_session_button"):
@@ -462,91 +550,9 @@ class MainWindow(QMainWindow):
             self.crack_table_widget.setItem(row, 2, length_item)
 
     def initialize_rating_table(self):
-        metrics = [
-            "Total crack length (% of CSD)",
-            "# cracks that are <25% CSD",
-            "All ext. cracks that are <10% CSD",
-            "# cracks that are <50% CSD",
-            "All ext. cracks that are <25% CSD",
-            "Are there 2 or fewer cracks between 50-80% CSD",
-            "All ext. cracks are <50% CSD",
-            "One or more int. cracks that are >80% CSD",
-            "Three or more int. cracks that are >50% CSD",
-            "Any splits present",
-            "OVERALL RATING",
-        ]
-
-        thresholds = {
-            "Rating 1": [
-                "≤100% CSD",
-                "Any number",
-                "All <10%",
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
-                "Pass",
-            ],
-            "Rating 2": [
-                "≤200% CSD",
-                "-",
-                "-",
-                "Any number",
-                "All <25%",
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
-                "Pass",
-            ],
-            "Rating 3": [
-                "≤300% CSD",
-                "-",
-                "-",
-                "-",
-                "-",
-                "≤2 cracks",
-                "All <50%",
-                "-",
-                "-",
-                "-",
-                "Pass",
-            ],
-            "Rating 4": [
-                "> 300% CSD",
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
-                "Any >50%",
-                "≥1 crack >80%",
-                "≥3 cracks >50%",
-                "-",
-                "Fail",
-            ],
-            "Rating 5": [
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
-                "Yes",
-                "Fail",
-            ],
-        }
-
-        self.rating_table_widget.setRowCount(len(metrics))
-        self.rating_table_widget.setColumnCount(len(thresholds) + 2)
-        self.rating_table_widget.setHorizontalHeaderLabels(["Metric", "Value"] + list(thresholds.keys()))
+        self.rating_table_widget.setRowCount(len(RATING_METRICS))
+        self.rating_table_widget.setColumnCount(len(RATING_HEADER_LABELS))
+        self.rating_table_widget.setHorizontalHeaderLabels(RATING_HEADER_LABELS)
 
         vertical_header = self.rating_table_widget.verticalHeader()
         if vertical_header:
@@ -557,11 +563,11 @@ class MainWindow(QMainWindow):
             header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.rating_table_widget.setColumnWidth(0, 275)
 
-        for row, metric in enumerate(metrics):
+        for row, metric in enumerate(RATING_METRICS):
             self.rating_table_widget.setItem(row, 0, QTableWidgetItem(metric))
-            for col, threshold_key in enumerate(thresholds.keys(), start=2):
+            for col, threshold_key in enumerate(RATING_THRESHOLDS.keys(), start=2):
                 self.rating_table_widget.setColumnWidth(col, 90)
-                threshold_item = QTableWidgetItem(thresholds[threshold_key][row])
+                threshold_item = QTableWidgetItem(RATING_THRESHOLDS[threshold_key][row])
                 threshold_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.rating_table_widget.setItem(row, col, threshold_item)
 
@@ -652,6 +658,8 @@ class MainWindow(QMainWindow):
         metrics = compute_metrics(cracks)
         rating = assign_iso23936_rating(cracks)
         result = "Pass" if rating <= 3 else "Fail"
+        snapshot_png = self._capture_view_snapshot()
+        crack_values: List[Crack] = [(ctype, length) for ctype, length in cracks]
 
         record = SessionAnalysis(
             index=len(self.session_records) + 1,
@@ -662,6 +670,8 @@ class MainWindow(QMainWindow):
             total_pct=metrics.total_pct,
             rating=rating,
             result=result,
+            cracks=crack_values,
+            snapshot_png=snapshot_png,
         )
 
         self.session_records.append(record)
@@ -708,15 +718,28 @@ class MainWindow(QMainWindow):
             if not suppress_conf:
                 QMessageBox.information(self, "Success", f"Image saved to {file_path}")
 
+    def _capture_view_snapshot(self) -> Optional[bytes]:
+        try:
+            pixmap = self.view.grab()
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                temp_path = tmp.name
+            if not pixmap.save(temp_path, "PNG"):
+                os.remove(temp_path)
+                return None
+            with open(temp_path, "rb") as fp:
+                data = fp.read()
+            os.remove(temp_path)
+            return data
+        except Exception:
+            return None
+
     def saveAsExcel(self):
-        if not self.current_image_path:
-            QMessageBox.warning(self, "No Image!", "No image has been loaded. Please load an image first.")
+        if not self.session_records:
+            QMessageBox.warning(self, "No Analyses", "Finalize at least one analysis before saving a report.")
             return
 
-        image_name = os.path.basename(self.current_image_path)
-        base_name = os.path.splitext(image_name)[0]
         current_date = datetime.datetime.now().strftime("%m%d%Y")
-        default_report_name = f"{base_name} - report - {current_date}.xlsx"
+        default_report_name = f"session-report-{current_date}.xlsx"
 
         file_path, _ = QFileDialog.getSaveFileName(
             self,
@@ -729,47 +752,130 @@ class MainWindow(QMainWindow):
             return
 
         workbook = Workbook()
-        image_sheet = workbook.active
-        image_sheet.title = f"{base_name} Analysis"
+        summary_sheet = workbook.active
+        summary_sheet.title = "Session Summary"
+        self._populate_session_summary_sheet(summary_sheet)
 
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
-            temp_image_path = temp_file.name
-        self.saveCanvas(temp_image_path, suppress_conf=True)
+        temp_image_paths: List[str] = []
 
-        excel_image = Image(temp_image_path)
-        image_sheet.add_image(excel_image, "B2")
+        try:
+            for record in self.session_records:
+                snapshot_path = None
+                if record.snapshot_png:
+                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                        tmp.write(record.snapshot_png)
+                        snapshot_path = tmp.name
+                    temp_image_paths.append(snapshot_path)
+                self._add_analysis_sheet(workbook, record, snapshot_path)
 
-        header_row = 2
-        for col in range(self.rating_table_widget.columnCount()):
-            header_item = self.rating_table_widget.horizontalHeaderItem(col)
-            header_value = header_item.text() if header_item else ""
-            header_cell = image_sheet.cell(row=header_row, column=12 + col)
-            header_cell.value = header_value
+            workbook.save(file_path)
+            QMessageBox.information(self, "Success", f"Report saved to {file_path}")
+        finally:
+            for tmp_path in temp_image_paths:
+                if tmp_path and os.path.exists(tmp_path):
+                    os.remove(tmp_path)
 
-        start_row = header_row + 1
-        for row in range(self.rating_table_widget.rowCount()):
-            for col in range(self.rating_table_widget.columnCount()):
-                item = self.rating_table_widget.item(row, col)
-                value = item.text() if item else ""
-                cell = image_sheet.cell(row=start_row + row, column=12 + col)
-                cell.value = value
+    def _populate_session_summary_sheet(self, sheet):
+        sheet["A1"] = "Completed Analyses"
+        headers = ["#", "Image", "Completed", "Cracks", "Total % CSD", "Rating", "Result"]
+        for idx, header in enumerate(headers, start=1):
+            sheet.cell(row=2, column=idx, value=header)
 
-        image_sheet.column_dimensions["L"].width = 50
-        for col_letter in ["M", "N", "O", "P", "Q", "R"]:
-            image_sheet.column_dimensions[col_letter].width = 20
+        for offset, record in enumerate(self.session_records, start=1):
+            row_idx = 2 + offset
+            sheet.cell(row=row_idx, column=1, value=record.index)
+            sheet.cell(row=row_idx, column=2, value=record.image_name)
+            sheet.cell(row=row_idx, column=3, value=record.completed_at.strftime("%Y-%m-%d %H:%M:%S"))
+            sheet.cell(row=row_idx, column=4, value=record.crack_count)
+            sheet.cell(row=row_idx, column=5, value=f"{record.total_pct:.2f}%")
+            sheet.cell(row=row_idx, column=6, value=record.rating)
+            sheet.cell(row=row_idx, column=7, value=record.result)
 
-        crack_sheet = workbook.create_sheet("Crack List")
-        crack_sheet.append(["Crack #", "Type", "Length (% of CSD)"])
-        for row in range(self.crack_table_widget.rowCount()):
-            crack_sheet.append([
-                self.crack_table_widget.item(row, 0).text() if self.crack_table_widget.item(row, 0) else "",
-                self.crack_table_widget.item(row, 1).text() if self.crack_table_widget.item(row, 1) else "",
-                self.crack_table_widget.item(row, 2).text() if self.crack_table_widget.item(row, 2) else "",
-            ])
+        analytics_widths = [6, 28, 20, 10, 14, 10, 10]
+        for idx, width in enumerate(analytics_widths, start=1):
+            sheet.column_dimensions[get_column_letter(idx)].width = width
 
-        workbook.save(file_path)
-        QMessageBox.information(self, "Success", f"Report saved to {file_path}")
-        os.remove(temp_image_path)
+    def _add_analysis_sheet(self, workbook: Workbook, record: SessionAnalysis, snapshot_path: Optional[str]):
+        base_title = f"{record.index:02d} - {os.path.splitext(record.image_name)[0]}"
+        sheet_title = self._make_unique_sheet_title(workbook, base_title)
+        sheet = workbook.create_sheet(sheet_title)
+
+        if snapshot_path and os.path.exists(snapshot_path):
+            excel_image = Image(snapshot_path)
+            sheet.add_image(excel_image, "B2")
+
+        metadata = [
+            ("Image", record.image_name),
+            ("Completed", record.completed_at.strftime("%Y-%m-%d %H:%M:%S")),
+            ("Cracks", record.crack_count),
+            ("Total % CSD", f"{record.total_pct:.2f}%"),
+            ("Rating", record.rating),
+            ("Result", record.result),
+        ]
+
+        for offset, (label, value) in enumerate(metadata, start=2):
+            sheet.cell(row=offset, column=2, value=label)
+            sheet.cell(row=offset, column=3, value=value)
+
+        self._write_rating_table_to_sheet(sheet, record)
+        self._write_crack_table_to_sheet(sheet, record)
+
+    def _make_unique_sheet_title(self, workbook: Workbook, base_title: str) -> str:
+        invalid_chars = set('[]:*?/\\')
+        sanitized = ''.join('_' if c in invalid_chars else c for c in base_title).strip()
+        sanitized = sanitized or "Analysis"
+        sanitized = sanitized[:31]
+
+        if sanitized not in workbook.sheetnames:
+            return sanitized
+
+        suffix = 2
+        while True:
+            suffix_text = f" ({suffix})"
+            trimmed = sanitized[: 31 - len(suffix_text)]
+            candidate = f"{trimmed}{suffix_text}"
+            if candidate not in workbook.sheetnames:
+                return candidate
+            suffix += 1
+
+    def _write_rating_table_to_sheet(self, sheet, record: SessionAnalysis, start_row: int = 2, start_col: int = 12):
+        header_row = start_row
+        for offset, header in enumerate(RATING_HEADER_LABELS):
+            sheet.cell(row=header_row, column=start_col + offset, value=header)
+
+        metrics = compute_metrics(record.cracks)
+        values = table_values(metrics)
+        overall_text = f"Rating: {record.rating} - {'Pass' if record.result == 'Pass' else 'Fail'}"
+
+        for metric_idx, metric_label in enumerate(RATING_METRICS):
+            row_idx = header_row + 1 + metric_idx
+            sheet.cell(row=row_idx, column=start_col, value=metric_label)
+
+            if metric_idx < len(values):
+                sheet.cell(row=row_idx, column=start_col + 1, value=values[metric_idx])
+            else:
+                sheet.cell(row=row_idx, column=start_col + 1, value=overall_text)
+
+            for col_offset, threshold_key in enumerate(RATING_THRESHOLDS.keys(), start=2):
+                sheet.cell(
+                    row=row_idx,
+                    column=start_col + col_offset,
+                    value=RATING_THRESHOLDS[threshold_key][metric_idx],
+                )
+
+        for idx in range(len(RATING_HEADER_LABELS)):
+            col_letter = get_column_letter(start_col + idx)
+            sheet.column_dimensions[col_letter].width = 20 if idx else 50
+
+    def _write_crack_table_to_sheet(self, sheet, record: SessionAnalysis, start_row: int = 16, start_col: int = 12):
+        headers = ["Crack #", "Type", "Length (% of CSD)"]
+        for offset, header in enumerate(headers):
+            sheet.cell(row=start_row, column=start_col + offset, value=header)
+
+        for row_offset, (crack_type, length_pct) in enumerate(record.cracks, start=1):
+            sheet.cell(row=start_row + row_offset, column=start_col, value=row_offset)
+            sheet.cell(row=start_row + row_offset, column=start_col + 1, value=crack_type)
+            sheet.cell(row=start_row + row_offset, column=start_col + 2, value=f"{length_pct:.2f}%")
 
     def debug_current_rating(self):
         perimeter = self.view.get_perimeter_data()
