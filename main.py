@@ -878,14 +878,31 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Success", f"Image saved to {file_path}")
 
     def _capture_view_snapshot(self) -> Optional[bytes]:
-        overlay_was_visible = False
+        controls_visible = False
+        legend_visible = False
         try:
             if hasattr(self, "view") and hasattr(self.view, "controls_overlay_visible"):
-                overlay_was_visible = self.view.controls_overlay_visible()
-                if overlay_was_visible and hasattr(self.view, "set_controls_overlay_visible"):
+                controls_visible = self.view.controls_overlay_visible()
+                if controls_visible and hasattr(self.view, "set_controls_overlay_visible"):
                     self.view.set_controls_overlay_visible(False)
+            if hasattr(self, "view") and hasattr(self.view, "legend_overlay_visible"):
+                legend_visible = self.view.legend_overlay_visible()
+                if legend_visible and hasattr(self.view, "set_legend_overlay_visible"):
+                    self.view.set_legend_overlay_visible(False)
 
-            pixmap = self.view.grab()
+            pixmap: Optional[QPixmap] = None
+            # Prefer standardized snapshot; if that fails, fall back to a direct grab.
+            if hasattr(self.view, "render_standardized_snapshot"):
+                try:
+                    pixmap = self.view.render_standardized_snapshot()  # type: ignore[attr-defined]
+                except Exception:
+                    pixmap = None
+            if pixmap is None:
+                pixmap = self.view.grab()
+
+            if pixmap.isNull():
+                return None
+
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
                 temp_path = tmp.name
             if not pixmap.save(temp_path, "PNG"):
@@ -898,8 +915,10 @@ class MainWindow(QMainWindow):
         except Exception:
             return None
         finally:
-            if overlay_was_visible and hasattr(self.view, "set_controls_overlay_visible"):
+            if controls_visible and hasattr(self.view, "set_controls_overlay_visible"):
                 self.view.set_controls_overlay_visible(True)
+            if legend_visible and hasattr(self.view, "set_legend_overlay_visible"):
+                self.view.set_legend_overlay_visible(True)
 
     def _prompt_post_finalize_action(self, rating: int, result: str) -> Literal["load", "report", "continue"]:
         dialog = QMessageBox(self)
@@ -1030,7 +1049,7 @@ class MainWindow(QMainWindow):
 
         if snapshot_path and os.path.exists(snapshot_path):
             excel_image = Image(snapshot_path)
-            sheet.add_image(excel_image, "B2")
+            sheet.add_image(excel_image, "A1")
 
         metadata = [
             ("Image", record.image_name),
@@ -1041,12 +1060,17 @@ class MainWindow(QMainWindow):
             ("Result", record.result),
         ]
 
+        # Shift metadata block from B2 to O2
         for offset, (label, value) in enumerate(metadata, start=2):
-            sheet.cell(row=offset, column=2, value=label)
-            sheet.cell(row=offset, column=3, value=value)
+            sheet.cell(row=offset, column=15, value=label)   # O
+            sheet.cell(row=offset, column=16, value=value)  # P
 
-        self._write_rating_table_to_sheet(sheet, record)
-        self._write_crack_table_to_sheet(sheet, record)
+        # Shift rating table down so it starts at O9 instead of L2
+        rating_start_row = 9
+        crack_table_start_row = 23
+
+        self._write_rating_table_to_sheet(sheet, record, start_row=rating_start_row, start_col=15)
+        self._write_crack_table_to_sheet(sheet, record, start_row=crack_table_start_row, start_col=15)
 
     def _make_unique_sheet_title(self, workbook: Workbook, base_title: str) -> str:
         invalid_chars = set('[]:*?/\\')

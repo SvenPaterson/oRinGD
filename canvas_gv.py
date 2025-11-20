@@ -7,8 +7,8 @@ from scipy.interpolate import splprep, splev
 from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict
 
-from PyQt6.QtCore import Qt, QPointF, QRectF, QPoint, pyqtSignal
-from PyQt6.QtGui import QPainter, QPen, QPainterPath, QPixmap, QTransform, QAction
+from PyQt6.QtCore import Qt, QPointF, QRectF, QPoint, pyqtSignal, QSizeF
+from PyQt6.QtGui import QPainter, QPen, QPainterPath, QPixmap, QTransform, QAction, QColor, QImage
 from PyQt6.QtWidgets import (
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsPathItem,
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
@@ -167,11 +167,17 @@ class CanvasView(QGraphicsView):
 
         self._mode: str = 'idle'
         self._controls_overlay: Optional[QLabel] = None
+        self._legend_overlay: Optional[QLabel] = None
 
         # Visual pens
         self._perimeter_pen_preview = QPen(Qt.GlobalColor.green, 2); self._perimeter_pen_preview.setCosmetic(True)
         self._perimeter_pen_final = QPen(Qt.GlobalColor.blue, 2); self._perimeter_pen_final.setCosmetic(True)
-        self._crack_pen = QPen(Qt.GlobalColor.red, 2); self._crack_pen.setCosmetic(True)
+        self._crack_color_map = {
+            "Split": Qt.GlobalColor.red,
+            "External": Qt.GlobalColor.yellow,
+            "Internal": Qt.GlobalColor.green,
+        }
+        self._default_crack_pen = QPen(self._crack_color_map["Split"], 2); self._default_crack_pen.setCosmetic(True)
         
         # Snap/zoom
         self._snap_radius_img = 5.0
@@ -198,8 +204,11 @@ class CanvasView(QGraphicsView):
         self._perimeter: Optional[PerimeterData] = None
         self._csd_px: float = 1.0  # avoid div-by-zero; recompute on perimeter changes
         self._item_to_crack: Dict[QGraphicsPathItem, CrackData] = {}
+        self._auto_preview_min_points: int = 5
+        self._snapshot_long_edge_px: int = 900
 
         self._init_controls_overlay()
+        self._init_crack_legend_overlay()
 
     def _apply_mode(self, mode: str, force_emit: bool = False):
         if self._mode == mode and not force_emit:
@@ -329,17 +338,25 @@ class CanvasView(QGraphicsView):
         cx = sum(x for x, _ in pts)/len(pts); cy = sum(y for _, y in pts)/len(pts)
         return sorted(pts, key=lambda p: math.atan2(p[1]-cy, p[0]-cx))
 
-    def _generate_perimeter_loop(self):
+    def _auto_refresh_perimeter_preview(self) -> None:
+        """Generate or clear the tentative perimeter based on control point count."""
+        if len(self._perim_ctrl_img) >= self._auto_preview_min_points:
+            self._generate_perimeter_loop(show_warning=False)
+        elif self._perim_generated:
+            self._clear_perimeter_loop()
+
+    def _generate_perimeter_loop(self, *, show_warning: bool = True) -> bool:
         scene: CanvasScene = self.scene()  # type: ignore
         if scene.image_item is None:
-            return
+            return False
         if len(self._perim_ctrl_img) < 3:
-            try:
-                QMessageBox.warning(self, "Not Enough Points",
-                                    "Please add more points to define the perimeter.")
-            except Exception:
-                pass
-            return
+            if show_warning:
+                try:
+                    QMessageBox.warning(self, "Not Enough Points",
+                                        "Please add more points to define the perimeter.")
+                except Exception:
+                    pass
+            return False
 
         # 1) Order clockwise (legacy behavior)
         ordered = self._clockwise_sorted(self._perim_ctrl_img)
@@ -350,13 +367,15 @@ class CanvasView(QGraphicsView):
             if not dedup or math.hypot(p[0] - dedup[-1][0], p[1] - dedup[-1][1]) >= 1.0:
                 dedup.append(p)
         if len(dedup) < 3:
-            return
+            self._clear_perimeter_loop()
+            return False
 
         # Optional: avoid identical first/last with per=True
         if math.hypot(dedup[0][0] - dedup[-1][0], dedup[0][1] - dedup[-1][1]) < 1e-6:
             dedup = dedup[:-1]
             if len(dedup) < 3:
-                return
+                self._clear_perimeter_loop()
+                return False
 
         # 3) Try to build a periodic spline. Fall back to polygon if it fails.
         spline_img: List[Tuple[float, float]]
@@ -383,10 +402,13 @@ class CanvasView(QGraphicsView):
 
         # 5) Store model copy and recompute CSD
         #    (use dedup as control points so we don’t persist duplicates)
+        self._perim_ctrl_img = dedup
+        self._update_perim_ctrl_overlay()
         self._set_perimeter(ctrl_img=dedup, spline_img=spline_img)
 
         # 6) Reclassify cracks against the new perimeter
         self._reclassify_all_cracks()
+        return True
 
     def _clear_perimeter_loop(self):
         scene: CanvasScene = self.scene()  # type: ignore
@@ -457,7 +479,7 @@ class CanvasView(QGraphicsView):
             scene: CanvasScene = self.scene()  # type: ignore
             self._crack_preview_item = QGraphicsPathItem()
             self._crack_preview_item.setZValue(15)
-            pen = QPen(self._crack_pen)        # same visual as final cracks
+            pen = QPen(self._default_crack_pen)
             pen.setCosmetic(True)
             self._crack_preview_item.setPen(pen)
             scene.addItem(self._crack_preview_item)
@@ -471,6 +493,9 @@ class CanvasView(QGraphicsView):
         preview_pts = rdp_simplify(preview_src, eps)
         self._ensure_crack_preview()
         self._crack_preview_item.setPath(self._build_path_from_img(preview_pts))
+        if len(preview_pts) >= 2:
+            ctype = self._classify_crack_img(preview_pts)
+            self._set_crack_pen(self._crack_preview_item, ctype, alpha=180)
 
     def _clear_crack_preview(self):
         if self._crack_preview_item is not None:
@@ -565,6 +590,7 @@ class CanvasView(QGraphicsView):
         self.centerOn(self.mapToScene(self.viewport().rect().center()) + (p2 - p1))
 
     def _reclassify_all_cracks(self):
+        scene: CanvasScene = self.scene()  # type: ignore
         updated = []
         for c in self._cracks:
             pts = self._pts_for_measure(c)  # classify using the same geometry we measure
@@ -575,6 +601,10 @@ class CanvasView(QGraphicsView):
                             crack_type=new_type)
             updated.append(c)
         self._cracks = updated
+        if scene:
+            for item, crack in zip(scene.crack_items, self._cracks):
+                self._set_crack_pen(item, crack.crack_type)
+        self._item_to_crack = {item: crack for item, crack in zip(scene.crack_items, self._cracks)} if scene else {}
 
     def _dist_to_polyline(self, pt: Tuple[float,float], poly: List[Tuple[float,float]]) -> float:
         x,y = pt
@@ -698,6 +728,7 @@ class CanvasView(QGraphicsView):
                 img_xy = CoordinateManager.scene_to_image(self.mapToScene(e.position().toPoint()), scene.image_item)
                 self._perim_ctrl_img.append(img_xy)
                 self._update_perim_ctrl_overlay()
+                self._auto_refresh_perimeter_preview()
                 return
             if self._mode == 'draw_crack':
                 self._current_crack_img.clear()
@@ -754,11 +785,12 @@ class CanvasView(QGraphicsView):
                 scene: CanvasScene = self.scene()  # type: ignore
                 sp = self.mapToScene(e.position().toPoint())
                 if self._mode == 'draw_perimeter':
-                    if not self._perim_generated:
-                        if scene.image_item:
-                            img_xy = CoordinateManager.scene_to_image(sp, scene.image_item)
-                            self._delete_nearest_ctrl_point(img_xy, 10.0)
-                    else:
+                    if scene.image_item:
+                        img_xy = CoordinateManager.scene_to_image(sp, scene.image_item)
+                        if self._delete_nearest_ctrl_point(img_xy, 10.0):
+                            self._auto_refresh_perimeter_preview()
+                            return
+                    if self._perim_generated:
                         self._clear_perimeter_loop()
                         self._reclassify_all_cracks()
                         self._clear_crack_preview()
@@ -783,14 +815,14 @@ class CanvasView(QGraphicsView):
                     src = self._smooth_once(self._current_crack_img)
                     final_pts = rdp_simplify(src, eps)
 
+                    ctype = self._classify_crack_img(final_pts)  # classify on simplified endpoints
                     crack_item = QGraphicsPathItem()
                     crack_item.setZValue(20)
-                    crack_item.setPen(self._crack_pen)
+                    self._set_crack_pen(crack_item, ctype)
                     crack_item.setPath(self._build_path_from_img(final_pts))
                     scene.addItem(crack_item)
                     scene.crack_items.append(crack_item)
 
-                    ctype = self._classify_crack_img(final_pts)  # classify on simplified endpoints
                     cdata = CrackData(points=list(self._current_crack_img),
                                     points_simplified=list(final_pts),
                                     crack_type=ctype, epsilon_used=eps)
@@ -812,6 +844,7 @@ class CanvasView(QGraphicsView):
         super().resizeEvent(ev)
         self._recompute_min_scale()
         self._update_controls_overlay_position()
+        self._update_legend_overlay_position()
         
     def controls_overlay_visible(self) -> bool:
         return bool(self._controls_overlay and self._controls_overlay.isVisible())
@@ -819,6 +852,57 @@ class CanvasView(QGraphicsView):
     def set_controls_overlay_visible(self, visible: bool) -> None:
         if self._controls_overlay:
             self._controls_overlay.setVisible(visible)
+
+    def legend_overlay_visible(self) -> bool:
+        return bool(self._legend_overlay and self._legend_overlay.isVisible())
+
+    def set_legend_overlay_visible(self, visible: bool) -> None:
+        if self._legend_overlay:
+            self._legend_overlay.setVisible(visible)
+
+    def render_standardized_snapshot(self) -> Optional[QPixmap]:
+        """Render the full scene to a consistent viewport size for report snapshots.
+
+        Returns None if no image is loaded or the scene is empty.
+        """
+        scene: CanvasScene = self.scene()  # type: ignore
+        if scene is None or scene.image_item is None:
+            return None
+
+        content_rect = scene.itemsBoundingRect()
+        if content_rect.isEmpty():
+            return None
+
+        padded_rect = content_rect.adjusted(-20.0, -20.0, 20.0, 20.0)
+        width = padded_rect.width()
+        height = padded_rect.height()
+        if width <= 0 or height <= 0:
+            return None
+
+        target_long = max(1, self._snapshot_long_edge_px)
+        aspect = width / height
+        if aspect >= 1.0:
+            export_width = target_long
+            export_height = max(1, int(round(target_long / aspect)))
+        else:
+            export_height = target_long
+            export_width = max(1, int(round(target_long * aspect)))
+
+        image = QImage(export_width, export_height, QImage.Format.Format_ARGB32)
+        image.fill(Qt.GlobalColor.transparent)
+
+        painter = QPainter()
+        try:
+            if not painter.begin(image):
+                return None
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            target_rect = QRectF(QPointF(0.0, 0.0), QSizeF(export_width, export_height))
+            self.render(painter, target_rect, padded_rect)
+        finally:
+            if painter.isActive():
+                painter.end()
+
+        return QPixmap.fromImage(image)
 
     def _set_viewport_cursor(self, cursor: Qt.CursorShape) -> None:
         viewport = self.viewport()
@@ -841,6 +925,30 @@ class CanvasView(QGraphicsView):
         self._controls_overlay.adjustSize()
         self._update_controls_overlay_position()
 
+    def _init_crack_legend_overlay(self):
+        split_hex = QColor(self._crack_color_map["Split"]).name()
+        external_hex = QColor(self._crack_color_map["External"]).name()
+        internal_hex = QColor(self._crack_color_map["Internal"]).name()
+        text = (
+            f"<span style='color: {split_hex};'>Split</span><br>"
+            f"<span style='color: {external_hex};'>External</span><br>"
+            f"<span style='color: {internal_hex};'>Internal</span>"
+        )
+        self._legend_overlay = QLabel(text, self.viewport())
+        self._legend_overlay.setTextFormat(Qt.TextFormat.RichText)
+        self._legend_overlay.setStyleSheet(
+            "background-color: rgba(0, 0, 0, 180);"
+            "color: white;"
+            "border: 1px solid rgba(255, 255, 255, 120);"
+            "border-radius: 4px;"
+            "padding: 6px;"
+            "font-size: 11px;"
+        )
+        self._legend_overlay.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self._legend_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._legend_overlay.adjustSize()
+        self._update_legend_overlay_position()
+
     def _update_controls_overlay_position(self):
         if not self._controls_overlay:
             return
@@ -854,6 +962,24 @@ class CanvasView(QGraphicsView):
             margin,
             max(margin, viewport.height() - overlay_size.height() - margin),
         )
+
+    def _update_legend_overlay_position(self):
+        if not self._legend_overlay:
+            return
+        viewport = self.viewport()
+        if viewport is None:
+            return
+        margin = 12
+        overlay_size = self._legend_overlay.sizeHint()
+        self._legend_overlay.resize(overlay_size)
+        self._legend_overlay.move(margin, margin)
+
+    def _set_crack_pen(self, item: QGraphicsPathItem, crack_type: str, *, alpha: int = 255) -> None:
+        color = QColor(self._crack_color_map.get(crack_type, Qt.GlobalColor.red))
+        color.setAlpha(alpha)
+        pen = QPen(color, 2)
+        pen.setCosmetic(True)
+        item.setPen(pen)
 
 # ----- for testing new zoom view features before committing -----
 class GVTestPane(QWidget):

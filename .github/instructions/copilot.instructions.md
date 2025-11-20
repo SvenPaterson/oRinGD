@@ -1,3 +1,7 @@
+---
+applyTo: '**'
+---
+
 # Copilot Instructions
 
 These notes tell future contributors (human or AI) how to keep oRinGD compatible with existing `.orngd` session files while evolving the feature set.
@@ -20,12 +24,25 @@ These notes tell future contributors (human or AI) how to keep oRinGD compatible
 6. **Git guardrail**: Never run `git push`, create tags, or interact with remotes unless a human explicitly orders it for the current task.
 
 ## Required Tests & Checks
-Run these commands locally before pushing:
+Run tests from the project virtual environment to ensure the same dependencies as CI:
 
-```cmd
-python -m unittest tests.test_session_store -v
-python -m unittest tests.test_iso23936_unittest -v
-```
+1. Activate the venv (PowerShell):
+   ```powershell
+   .\.venv\Scripts\Activate.ps1
+   ```
+   or (cmd.exe):
+   ```cmd
+   .\.venv\Scripts\activate
+   ```
+2. Execute the full suite:
+   ```cmd
+   python -m unittest discover -s tests
+   ```
+3. When debugging specific modules, you can still target them individually:
+   ```cmd
+   python -m unittest tests.test_session_store -v
+   python -m unittest tests.test_iso23936_unittest -v
+   ```
 
 Additional expectations:
 - Add/extend unit tests that fail when required fields disappear or types change.

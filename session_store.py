@@ -10,7 +10,7 @@ from typing import List, Optional, Sequence, Tuple
 from rating import Crack
 
 ## Major version change indicates breaking changes, Major.Minor.Patch
-APP_VERSION = "1.1.0" # new PRs require version bump
+APP_VERSION = "1.2.0" # new PRs require version bump
 SESSION_SCHEMA_VERSION = 1 ## Increment this version number when the session file format changes, it will break .orngd compatibility
 SESSION_JSON_FILENAME = "session.json"
 
